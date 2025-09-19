@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +40,8 @@ PERIOD_OPTIONS = ["1mo", "3mo", "6mo", "1y", "2y", "5y", "ytd", "max"]
 INTERVAL_OPTIONS = ["1d", "1wk", "1mo"]
 LOWER_INTERVAL_OPTIONS = ["30m", "1h", "2h", "4h", "1d"]
 LOWER_PERIOD_SUGGESTIONS = ["30d", "60d", "90d", "180d", "1y"]
+
+SUMMARY_HEADING_RE = re.compile(r"^[A-Z0-9 /()_-]+:?$")
 
 
 def _safe_index(options: list[str], value: str, fallback: int = 0) -> int:
@@ -86,6 +89,84 @@ def _render_playbook_markdown(plan_text: str) -> None:
             st.markdown(content)
         else:
             st.info("No guidance provided for this section.")
+
+
+def _summary_to_markdown(summary: str) -> str:
+    """Render the plain-text technical summary as lightweight Markdown."""
+
+    def flush(
+        blocks: list[tuple[str | None, list[str]]],
+        buffer: list[str],
+        block_kind: list[str | None],
+    ) -> None:
+        if buffer:
+            blocks.append((block_kind[0], buffer.copy()))
+            buffer.clear()
+            block_kind[0] = None
+
+    lines = summary.splitlines()
+    blocks: list[tuple[str | None, list[str]]] = []
+    buffer: list[str] = []
+    block_kind: list[str | None] = [None]
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            flush(blocks, buffer, block_kind)
+            continue
+
+        if (
+            SUMMARY_HEADING_RE.match(stripped) and len(stripped.split()) <= 7
+        ) or stripped.endswith(":"):
+            flush(blocks, buffer, block_kind)
+            heading_text = stripped.rstrip(":")
+            if heading_text:
+                blocks.append(("heading", [heading_text]))
+            continue
+
+        if stripped.startswith("- "):
+            if block_kind[0] != "list":
+                flush(blocks, buffer, block_kind)
+                block_kind[0] = "list"
+            buffer.append(stripped[2:].strip())
+            continue
+
+        if "|" in stripped:
+            if block_kind[0] != "table":
+                flush(blocks, buffer, block_kind)
+                block_kind[0] = "table"
+            cells = [cell.strip() for cell in stripped.split("|")]
+            buffer.append("|".join(cells))
+            continue
+
+        if block_kind[0] != "text":
+            flush(blocks, buffer, block_kind)
+            block_kind[0] = "text"
+        buffer.append(stripped)
+
+    flush(blocks, buffer, block_kind)
+
+    markdown_parts: list[str] = []
+    for kind, block in blocks:
+        if not block:
+            continue
+        if kind == "heading":
+            markdown_parts.append(f"### {block[0]}")
+        elif kind == "list":
+            markdown_parts.extend(f"- {item}" for item in block)
+        elif kind == "table":
+            rows = [row.split("|") for row in block]
+            header = rows[0]
+            markdown_parts.append("| " + " | ".join(header) + " |")
+            markdown_parts.append("| " + " | ".join(["---"] * len(header)) + " |")
+            for row in rows[1:]:
+                padded = row + [""] * (len(header) - len(row))
+                markdown_parts.append("| " + " | ".join(padded[: len(header)]) + " |")
+        else:
+            markdown_parts.append(" ".join(block))
+
+    return "\n\n".join(part for part in markdown_parts if part.strip())
 
 
 @dataclass(slots=True)
@@ -707,8 +788,10 @@ def main() -> None:
     )
 
     with summary_tab:
-        st.subheader("Structured Summary")
-        st.code(result["technical_summary"], language="text")
+        formatted_summary = _summary_to_markdown(result["technical_summary"])
+        st.markdown(formatted_summary)
+        with st.expander("Raw summary (text)"):
+            st.code(result["technical_summary"], language="text")
         st.download_button(
             "Download summary (.txt)",
             result["technical_summary"],
