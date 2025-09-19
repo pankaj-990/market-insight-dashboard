@@ -14,6 +14,7 @@ import streamlit as st
 from market_analysis import (
     AnalysisHistory,
     DatasetRequest,
+    build_multi_timeframe_summary,
     build_technical_summary,
     create_playbook_builder,
     ensure_dataset,
@@ -36,6 +37,8 @@ HISTORY = AnalysisHistory(Path("analysis_history.json"))
 
 PERIOD_OPTIONS = ["1mo", "3mo", "6mo", "1y", "2y", "5y", "ytd", "max"]
 INTERVAL_OPTIONS = ["1d", "1wk", "1mo"]
+LOWER_INTERVAL_OPTIONS = ["30m", "1h", "2h", "4h", "1d"]
+LOWER_PERIOD_SUGGESTIONS = ["30d", "60d", "90d", "180d", "1y"]
 
 
 def _safe_index(options: list[str], value: str, fallback: int = 0) -> int:
@@ -92,6 +95,11 @@ class AnalysisParams:
     ticker: str = "^NSEI"
     period: str = "1y"
     interval: str = "1d"
+    include_lower: bool = True
+    lower_period: str = "60d"
+    lower_interval: str = "1h"
+    lower_key_window: int = 30
+    lower_recent_rows: int = 20
     round_digits: int = 2
     max_age_days: int = 3
     force_refresh: bool = False
@@ -100,7 +108,11 @@ class AnalysisParams:
 
     @property
     def data_path(self) -> Path:
-        return default_data_path(self.ticker)
+        return default_data_path(self.ticker, self.interval)
+
+    @property
+    def lower_data_path(self) -> Path:
+        return default_data_path(self.ticker, self.lower_interval)
 
     @classmethod
     def from_state(cls, state: Dict[str, Any]) -> "AnalysisParams":
@@ -109,6 +121,11 @@ class AnalysisParams:
             ticker=state.get("ticker", "^NSEI"),
             period=state.get("period", "1y"),
             interval=state.get("interval", "1d"),
+            include_lower=bool(state.get("include_lower", True)),
+            lower_period=state.get("lower_period", "60d"),
+            lower_interval=state.get("lower_interval", "1h"),
+            lower_key_window=int(state.get("lower_key_window", 30)),
+            lower_recent_rows=int(state.get("lower_recent_rows", 20)),
             round_digits=int(state.get("round_digits", 2)),
             max_age_days=int(state.get("max_age_days", 3)),
             force_refresh=bool(state.get("force_refresh", False)),
@@ -122,6 +139,11 @@ class AnalysisParams:
             "ticker": self.ticker,
             "period": self.period,
             "interval": self.interval,
+            "include_lower": self.include_lower,
+            "lower_period": self.lower_period,
+            "lower_interval": self.lower_interval,
+            "lower_key_window": self.lower_key_window,
+            "lower_recent_rows": self.lower_recent_rows,
             "round_digits": self.round_digits,
             "max_age_days": self.max_age_days,
             "data_path": str(self.data_path),
@@ -130,8 +152,8 @@ class AnalysisParams:
             "show_prompt": self.show_prompt,
         }
 
-    def dataset_request(self) -> DatasetRequest:
-        """Translate the params into a :class:`DatasetRequest`."""
+    def higher_dataset_request(self) -> DatasetRequest:
+        """Translate the primary timeframe into a :class:`DatasetRequest`."""
         return DatasetRequest(
             ticker=self.ticker,
             period=self.period,
@@ -140,15 +162,43 @@ class AnalysisParams:
             max_age_days=self.max_age_days,
         )
 
+    def lower_dataset_request(self) -> Optional[DatasetRequest]:
+        """Return a :class:`DatasetRequest` for the lower timeframe when enabled."""
+        if not self.include_lower:
+            return None
+        interval = (self.lower_interval or "").strip()
+        if not interval or interval.lower() == "none":
+            return None
+        period = (self.lower_period or self.period).strip()
+        return DatasetRequest(
+            ticker=self.ticker,
+            period=period,
+            interval=interval,
+            round_digits=self.round_digits,
+            max_age_days=self.max_age_days,
+        )
+
     def cache_payload(self) -> Dict[str, Any]:
         """Payload used when building a cache key."""
-        return {
+        payload = {
             "ticker": self.ticker,
             "period": self.period,
             "interval": self.interval,
             "round_digits": self.round_digits,
             "data_path": str(self.data_path),
         }
+        lower_request = self.lower_dataset_request()
+        if lower_request is not None:
+            payload.update(
+                {
+                    "lower_period": lower_request.period,
+                    "lower_interval": lower_request.interval,
+                    "lower_data_path": str(self.lower_data_path),
+                    "lower_key_window": self.lower_key_window,
+                    "lower_recent_rows": self.lower_recent_rows,
+                }
+            )
+        return payload
 
     def history_payload(self) -> Dict[str, Any]:
         """Payload stored alongside history entries."""
@@ -206,7 +256,53 @@ def render_sidebar(defaults: AnalysisParams) -> tuple[AnalysisParams, bool]:
                     help="Set -1 to skip freshness checks.",
                 )
             )
-            st.caption(f"Cache file: {default_data_path(ticker)}")
+            st.caption(f"Cache file: {default_data_path(ticker, interval)}")
+            include_lower = st.checkbox(
+                "Include lower timeframe analysis",
+                value=defaults.include_lower,
+                help="Adds a secondary intraday timeframe (e.g. hourly) to the summary.",
+            )
+            lower_interval = defaults.lower_interval
+            lower_period = defaults.lower_period
+            lower_key_window = defaults.lower_key_window
+            lower_recent_rows = defaults.lower_recent_rows
+            if include_lower:
+                lower_interval_options = list(
+                    dict.fromkeys([defaults.lower_interval] + LOWER_INTERVAL_OPTIONS)
+                )
+                lower_interval = st.selectbox(
+                    "Lower interval",
+                    lower_interval_options,
+                    index=_safe_index(lower_interval_options, defaults.lower_interval),
+                )
+                lower_period = st.text_input(
+                    "Lower period",
+                    value=str(defaults.lower_period),
+                    help="Lower timeframe lookback (e.g. 30d, 60d, 1y).",
+                )
+                lower_key_window = int(
+                    st.number_input(
+                        "Lower key window (candles)",
+                        min_value=10,
+                        max_value=200,
+                        value=int(defaults.lower_key_window),
+                        help="Number of lower timeframe candles considered for highs and lows (flattened at 12-row summary).",
+                    )
+                )
+                lower_recent_rows = int(
+                    st.number_input(
+                        "Lower recent rows",
+                        min_value=10,
+                        max_value=60,
+                        value=int(defaults.lower_recent_rows),
+                        help="Rows from the lower timeframe included in the summary table (trimmed to 12 for the prompt).",
+                    )
+                )
+                st.caption(
+                    f"Lower cache file: {default_data_path(ticker, lower_interval)}"
+                )
+            else:
+                st.caption("Lower timeframe disabled for this run.")
             call_llm = st.checkbox(
                 "Generate LLM analysis",
                 value=defaults.call_llm,
@@ -228,6 +324,11 @@ def render_sidebar(defaults: AnalysisParams) -> tuple[AnalysisParams, bool]:
         ticker=ticker,
         period=period,
         interval=interval,
+        include_lower=include_lower,
+        lower_period=lower_period,
+        lower_interval=lower_interval,
+        lower_key_window=lower_key_window,
+        lower_recent_rows=lower_recent_rows,
         round_digits=round_digits,
         max_age_days=max_age_days,
         force_refresh=force_refresh,
@@ -241,17 +342,34 @@ def handle_submission(
     params: AnalysisParams, history_entries: list[Dict[str, Any]]
 ) -> None:
     """Execute the end-to-end analysis workflow when the form is submitted."""
+    lower_request = params.lower_dataset_request()
     with st.spinner("Loading market data..."):
         try:
-            df, data_source = ensure_dataset(
-                params.dataset_request(), force_refresh=params.force_refresh
+            higher_df, higher_source = ensure_dataset(
+                params.higher_dataset_request(), force_refresh=params.force_refresh
             )
         except Exception as exc:
             _store_error(f"Unable to load data: {exc}")
             return
 
-    last_timestamp = df.index[-1].to_pydatetime().isoformat()
-    cache_key = make_cache_key(params.cache_payload(), last_timestamp)
+        lower_df: Optional[pd.DataFrame] = None
+        lower_source: Optional[str] = None
+        if lower_request is not None:
+            try:
+                lower_df, lower_source = ensure_dataset(
+                    lower_request, force_refresh=params.force_refresh
+                )
+            except Exception as exc:
+                _store_error(f"Unable to load lower timeframe data: {exc}")
+                return
+
+    higher_last_timestamp = higher_df.index[-1].to_pydatetime().isoformat()
+    lower_last_timestamp = (
+        lower_df.index[-1].to_pydatetime().isoformat() if lower_df is not None else None
+    )
+    cache_key = make_cache_key(
+        params.cache_payload(), higher_last_timestamp, lower_last_timestamp
+    )
     existing_entry = None
     if not params.force_refresh:
         existing_entry = _lookup_history_entry(history_entries, cache_key)
@@ -265,14 +383,22 @@ def handle_submission(
     if existing_entry:
         technical_summary = existing_entry["technical_summary"]
         reused_summary = True
-        if existing_entry.get("playbook"):
-            playbook_payload = existing_entry.get("playbook")
-            reused_playbook = True
-        if existing_entry.get("playbook_error"):
-            playbook_error = existing_entry.get("playbook_error")
+        playbook_payload = existing_entry.get("playbook")
+        reused_playbook = bool(playbook_payload)
+        playbook_error = existing_entry.get("playbook_error")
     else:
         try:
-            technical_summary = build_technical_summary(df)
+            if lower_df is not None and lower_request is not None:
+                technical_summary = build_multi_timeframe_summary(
+                    higher_df,
+                    lower_df,
+                    higher_label=f"Higher Timeframe ({params.interval})",
+                    lower_label=f"Lower Timeframe ({lower_request.interval})",
+                    lower_key_window=params.lower_key_window,
+                    lower_recent_rows=params.lower_recent_rows,
+                )
+            else:
+                technical_summary = build_technical_summary(higher_df)
         except Exception as exc:
             _store_error(f"Failed to build technical summary: {exc}")
             return
@@ -321,11 +447,27 @@ def handle_submission(
         elif existing_entry and not playbook_payload:
             playbook_error = existing_entry.get("playbook_error")
 
+    data_sources: Dict[str, Dict[str, str]] = {
+        "higher": {
+            "interval": params.interval,
+            "source": higher_source,
+            "path": str(params.data_path),
+            "last_timestamp": higher_last_timestamp,
+        }
+    }
+    if lower_df is not None and lower_request is not None and lower_source:
+        data_sources["lower"] = {
+            "interval": lower_request.interval,
+            "source": lower_source,
+            "path": str(params.lower_data_path),
+            "last_timestamp": lower_last_timestamp or "",
+        }
+
     history_entry = {
         "timestamp": datetime.utcnow().isoformat(),
         "cache_key": cache_key,
         "params": params.history_payload(),
-        "data_source": data_source,
+        "data_source": data_sources,
         "technical_summary": technical_summary,
         "llm_text": llm_text,
         "llm_error": llm_error,
@@ -340,15 +482,15 @@ def handle_submission(
         try:
             playbook_builder.upsert_history_entry(history_entry)
         except Exception as exc:
-            # We already surface the generation error above; indexing failures are non-fatal.
             message = f"Failed to persist playbook entry: {exc}"
             playbook_error = (
                 f"{playbook_error}; {message}" if playbook_error else message
             )
 
     result_payload = {
-        "df": df,
-        "data_source": data_source,
+        "higher_df": higher_df,
+        "lower_df": lower_df,
+        "data_sources": data_sources,
         "technical_summary": technical_summary,
         "llm_text": llm_text,
         "llm_error": llm_error,
@@ -364,6 +506,8 @@ def handle_submission(
         "playbook": playbook_payload,
         "playbook_error": playbook_error,
         "entry_id": cache_entry_id,
+        "higher_last_timestamp": higher_last_timestamp,
+        "lower_last_timestamp": lower_last_timestamp,
     }
     _store_result(result_payload, params)
 
@@ -481,13 +625,27 @@ def main() -> None:
             st.dataframe(history_df, use_container_width=True)
         return
 
-    df = result["df"]
+    higher_df = result["higher_df"]
+    lower_df = result.get("lower_df")
     round_digits = result["params"]["round_digits"]
+    data_sources = result.get("data_sources", {})
+    higher_info = data_sources.get("higher", {})
+    lower_info = data_sources.get("lower")
 
-    st.success(
-        f"Using {result['data_source']} data for `{result['params']['ticker']}` "
-        f"from {result['params']['data_path']}"
+    ticker_label = result["params"].get("ticker", "?")
+    higher_message = (
+        f"Using {higher_info.get('source', result.get('data_source', 'cached'))} data for `{ticker_label}` "
+        f"({higher_info.get('interval', result['params'].get('interval', 'primary'))}) "
+        f"from {higher_info.get('path', result['params'].get('data_path', 'cache'))}"
     )
+    if lower_info:
+        lower_message = (
+            f" | Lower timeframe {lower_info.get('interval')} sourced "
+            f"from {lower_info.get('path')} ({lower_info.get('source')})"
+        )
+    else:
+        lower_message = ""
+    st.success(higher_message + lower_message)
 
     status_notes = []
     if result.get("reused_summary"):
@@ -499,16 +657,44 @@ def main() -> None:
     if status_notes:
         st.caption(" | ".join(status_notes))
 
-    latest_close = df["Close"].iloc[-1]
-    ema_30 = df["EMA_30"].iloc[-1]
-    ema_200 = df["EMA_200"].iloc[-1]
-    rsi_14 = df["RSI_14"].iloc[-1]
+    latest_close = higher_df["Close"].iloc[-1]
+    ema_30 = higher_df["EMA_30"].iloc[-1]
+    ema_200 = higher_df["EMA_200"].iloc[-1]
+    rsi_14 = higher_df["RSI_14"].iloc[-1]
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Latest Close", _format_metric(latest_close, round_digits))
     col2.metric("EMA 30", _format_metric(ema_30, round_digits))
     col3.metric("EMA 200", _format_metric(ema_200, round_digits))
     col4.metric("RSI 14", _format_metric(rsi_14, round_digits))
+
+    if lower_df is not None and not lower_df.empty:
+        lower_interval_label = (
+            lower_info.get("interval", result["params"].get("lower_interval", "lower"))
+            if lower_info
+            else result["params"].get("lower_interval", "lower")
+        )
+        lower_close = lower_df["Close"].iloc[-1]
+        lower_ema30 = lower_df["EMA_30"].iloc[-1]
+        lower_ema200 = lower_df["EMA_200"].iloc[-1]
+        lower_rsi = lower_df["RSI_14"].iloc[-1]
+        lcol1, lcol2, lcol3, lcol4 = st.columns(4)
+        lcol1.metric(
+            f"Lower Close ({lower_interval_label})",
+            _format_metric(lower_close, round_digits),
+        )
+        lcol2.metric(
+            f"Lower EMA 30",
+            _format_metric(lower_ema30, round_digits),
+        )
+        lcol3.metric(
+            f"Lower EMA 200",
+            _format_metric(lower_ema200, round_digits),
+        )
+        lcol4.metric(
+            f"Lower RSI 14",
+            _format_metric(lower_rsi, round_digits),
+        )
 
     summary_tab, data_tab, llm_tab, playbook_tab, history_tab = st.tabs(
         [
@@ -572,8 +758,10 @@ def main() -> None:
                             "Ticker": case.get("ticker"),
                             "Period": case.get("period"),
                             "Interval": case.get("interval"),
+                            "Lower Interval": case.get("lower_interval"),
                             "Recorded": case.get("recorded"),
                             "Last Candle": case.get("last_timestamp"),
+                            "Lower Last Candle": case.get("lower_last_timestamp"),
                             "Similarity": (
                                 f"{similarity_value:.3f}"
                                 if isinstance(similarity_value, (int, float))
@@ -591,16 +779,40 @@ def main() -> None:
                 st.caption("Reused cached playbook insights.")
 
     with data_tab:
-        st.subheader("Candlestick View")
-        _plot_candlestick(df)
-        st.divider()
-        st.subheader("Latest Candles")
-        st.dataframe(df.tail(20))
-        st.download_button(
-            "Download data (.csv)",
-            df.to_csv().encode("utf-8"),
-            file_name=f"ohlc_{result['params']['ticker']}.csv",
+        higher_interval_label = higher_info.get(
+            "interval", result["params"].get("interval", "primary")
         )
+        st.subheader(f"Higher Timeframe Candlestick ({higher_interval_label})")
+        _plot_candlestick(higher_df)
+        st.divider()
+        st.subheader(f"Higher Timeframe Latest Candles ({higher_interval_label})")
+        st.dataframe(higher_df.tail(20))
+        st.download_button(
+            "Download higher timeframe (.csv)",
+            higher_df.to_csv().encode("utf-8"),
+            file_name=f"ohlc_{result['params']['ticker']}_{higher_interval_label}.csv",
+            key="download-higher-data",
+        )
+        if lower_df is not None and not lower_df.empty:
+            lower_interval_label = (
+                lower_info.get(
+                    "interval", result["params"].get("lower_interval", "lower")
+                )
+                if lower_info
+                else result["params"].get("lower_interval", "lower")
+            )
+            st.divider()
+            st.subheader(f"Lower Timeframe Candlestick ({lower_interval_label})")
+            _plot_candlestick(lower_df)
+            st.divider()
+            st.subheader(f"Lower Timeframe Latest Candles ({lower_interval_label})")
+            st.dataframe(lower_df.tail(60))
+            st.download_button(
+                "Download lower timeframe (.csv)",
+                lower_df.to_csv().encode("utf-8"),
+                file_name=f"ohlc_{result['params']['ticker']}_{lower_interval_label}.csv",
+                key="download-lower-data",
+            )
 
     with llm_tab:
         st.subheader("Narrative Insights")
@@ -647,6 +859,12 @@ def main() -> None:
             st.info("Run the analysis to build your history.")
         else:
             st.dataframe(history_df, use_container_width=True)
+
+    st.warning(
+        "This application provides educational market analysis. It is not investment, "
+        "trading, or financial advice. Review all insights independently before "
+        "making decisions."
+    )
 
 
 def _format_metric(value: float, digits: int) -> str:

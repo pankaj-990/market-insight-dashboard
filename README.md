@@ -4,6 +4,7 @@ A small toolkit for downloading OHLC data for any Yahoo Finance symbol, generati
 
 ## Features
 - Fetches OHLC candles from Yahoo Finance and enriches them with EMA/RSI indicators.
+- Optional multi-timeframe workflow that blends higher timeframe context (e.g. daily) with intraday views (e.g. hourly).
 - Builds a structured technical summary that is suitable for human review or prompting an LLM.
 - Optional LLM integration via OpenRouter for narrative insights (CLI & Streamlit).
 - Streamlit dashboard with candlestick visualisations, caching, history, and download helpers.
@@ -31,6 +32,8 @@ Key flags:
 - `--round-digits`: Rounding applied when caching new data.
 - `--max-age-days`: Cache freshness window (`-1` disables the check).
 - `--force-refresh`: Ignore cached data and refetch.
+- `--lower-interval` / `--lower-period`: Enable multi-timeframe analysis (defaults to hourly over the last 60 days). Set `--lower-interval none` to disable.
+- `--lower-key-window` / `--lower-recent-rows`: Control how many lower timeframe candles feed the summary (prompt output trimmed to ~12 rows).
 - `--model` / `--temperature`: Override OpenRouter defaults.
 - `--show-prompt`: Print the composed LLM prompt to stdout.
 - `--show-playbook`: Display retrieval-backed playbook insights (requires embeddings + indexed history).

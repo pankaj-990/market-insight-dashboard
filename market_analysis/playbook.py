@@ -77,11 +77,13 @@ class PlaybookCase:
     ticker: str | None
     period: str | None
     interval: str | None
+    lower_interval: str | None
     recorded: str | None
     last_timestamp: str | None
+    lower_last_timestamp: str | None
     similarity: float | None
     summary_snippet: str
-    data_source: str | None
+    data_source: dict[str, Any] | str | None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -90,8 +92,10 @@ class PlaybookCase:
             "ticker": self.ticker,
             "period": self.period,
             "interval": self.interval,
+            "lower_interval": self.lower_interval,
             "recorded": self.recorded,
             "last_timestamp": self.last_timestamp,
+            "lower_last_timestamp": self.lower_last_timestamp,
             "similarity": self.similarity,
             "summary_snippet": self.summary_snippet,
             "data_source": self.data_source,
@@ -249,14 +253,26 @@ class PlaybookBuilder:
         self, summary: str, llm_text: Optional[str], entry: Mapping[str, Any]
     ) -> str:
         params = entry.get("params", {})
+        cache_key = entry.get("cache_key", {})
         lines = [
             f"Ticker: {params.get('ticker', 'unknown')}",
             f"Period: {params.get('period', 'unknown')} | Interval: {params.get('interval', 'unknown')}",
             f"Recorded: {entry.get('timestamp', 'unknown')}",
-            "",
-            "Technical Summary:",
-            summary.strip(),
         ]
+        lower_interval = params.get("lower_interval")
+        if lower_interval:
+            lower_period = params.get("lower_period") or "n/a"
+            lower_last = cache_key.get("lower_last_timestamp") or "n/a"
+            lines.append(
+                f"Lower TF: {lower_period} / {lower_interval} (last {lower_last})"
+            )
+        lines.extend(
+            [
+                "",
+                "Technical Summary:",
+                summary.strip(),
+            ]
+        )
         if llm_text:
             lines.extend(["", "LLM Narrative:", llm_text.strip()])
         notes = entry.get("notes")
@@ -278,8 +294,10 @@ class PlaybookBuilder:
             "ticker": params.get("ticker"),
             "period": params.get("period"),
             "interval": params.get("interval"),
+            "lower_interval": params.get("lower_interval"),
             "recorded": entry.get("timestamp"),
             "last_timestamp": cache_key.get("last_timestamp"),
+            "lower_last_timestamp": cache_key.get("lower_last_timestamp"),
             "max_age_days": params.get("max_age_days"),
             "data_source": entry.get("data_source"),
             "data_path": params.get("data_path"),
@@ -314,6 +332,11 @@ class PlaybookBuilder:
                 details.append(
                     "Window: " + " / ".join(filter(None, [case.period, case.interval]))
                 )
+            if case.lower_interval:
+                lower_bits = ["Lower TF", case.lower_interval]
+                if case.lower_last_timestamp:
+                    lower_bits.append(f"last {case.lower_last_timestamp}")
+                details.append(" ".join(lower_bits))
             if case.recorded:
                 details.append(f"Recorded: {case.recorded}")
             if case.last_timestamp:
@@ -356,8 +379,10 @@ class PlaybookBuilder:
                     ticker=metadata.get("ticker"),
                     period=metadata.get("period"),
                     interval=metadata.get("interval"),
+                    lower_interval=metadata.get("lower_interval"),
                     recorded=metadata.get("recorded"),
                     last_timestamp=metadata.get("last_timestamp"),
+                    lower_last_timestamp=metadata.get("lower_last_timestamp"),
                     similarity=float(score) if score is not None else None,
                     summary_snippet=snippet,
                     data_source=metadata.get("data_source"),

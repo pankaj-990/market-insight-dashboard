@@ -454,7 +454,7 @@ When the Streamlit app finishes its first run, expect `analysis_history.json` to
 | --- | --- | --- |
 | `ChatPromptTemplate` | `market_analysis.llm:_build_prompt`; `market_analysis.playbook:_PLAYBOOK_PROMPT` | Formats structured system/human messages |
 | `PydanticOutputParser` | `market_analysis.llm:_create_parser` | Enforces schema for five analysis tables |
-| `Runnable` pipeline | `market_analysis.llm:create_analysis_chain` | Prompt → ChatOpenAI → parser |
+| `Runnable` pipeline | `market_analysis.llm:generate_llm_analysis` | Builds prompt → ChatOpenAI → parser internally |
 | `ChatOpenAI` | `market_analysis.llm`, `market_analysis.playbook` | OpenRouter-compatible chat model |
 | `FAISS` | `market_analysis.playbook:PlaybookBuilder` | Vector store for historical summaries |
 | `Embeddings` (`OpenAIEmbeddings`, `HashingEmbeddings`) | same | Document embeddings; hash fallback for offline use |
@@ -527,11 +527,11 @@ python -m main --ticker NIFTY --period 1y --interval 1d --show-prompt --show-pla
 | Tabs: `Technical Summary`, `Playbook Insights`, `Recent Candles`, `LLM Analysis`, `History` | Mirrors CLI artefacts with downloads & tables |
 
 **Sidebar form (`render_sidebar`)**
-- Inputs: `ticker` (`text_input`), `period` (`selectbox` with `PERIOD_OPTIONS`), `interval` (`selectbox`), `round_digits` (`number_input`), `max_age_days`, `call_llm`, `force_refresh`, `show_prompt`.
+- Inputs: `ticker`, `period`, `interval`, plus lower timeframe toggles (`include_lower`, `lower_interval`, `lower_period`, window sizes), rounding, cache age, LLM toggles.
 - Submission writes `AnalysisParams` to session state (`analysis_params` key).
 
 **State flow**
-1. `AnalysisParams.dataset_request` translates form to `DatasetRequest`.
+1. `AnalysisParams.higher_dataset_request` / `.lower_dataset_request` translate form to `DatasetRequest` objects.
 2. `handle_submission` orchestrates fetch → summary → LLM → playbook → history record.
 3. Results cached under `analysis_result`; errors under `analysis_error`.
 4. `AnalysisHistory` persists to `analysis_history.json`.
@@ -567,11 +567,11 @@ ensure_dataset()
  └─ is_stale()
 ```
 
-- `default_data_filename(ticker: str) -> str`  
-  Summary: slugifies ticker → `{slug}_ohlc.csv`.  
+- `default_data_filename(ticker: str, interval: str | None = None) -> str`  
+  Summary: slugifies ticker and optional interval → `{slug}_{interval}_ohlc.csv`.  
   Returns: filename. No side effects. Used by `default_data_path`.
 
-- `default_data_path(ticker: str) -> Path`  
+- `default_data_path(ticker: str, interval: str | None = None) -> Path`  
   Summary: wraps filename in `Path`. Used by `AnalysisParams.data_path`.
 
 - `DataFetcher.fetch(self) -> pd.DataFrame`  
@@ -626,12 +626,10 @@ build_technical_summary()
 
 ### `market_analysis/llm.py`
 ```
-create_analysis_chain()
+generate_llm_analysis()
  ├─ _build_prompt()
  ├─ ChatOpenAI()
  └─ PydanticOutputParser()
-generate_llm_analysis()
- └─ wraps chain.invoke() and table markdown conversion
 ```
 
 - `TableSection`, `AnalysisTables` (`pydantic.BaseModel`)  
@@ -647,10 +645,6 @@ generate_llm_analysis()
 - `format_prompt(technical_summary: str) -> str`  
   Returns: multi-message prompt for audit.  
   Used in: CLI `_print_prompt`, Streamlit prompt display.
-
-- `create_analysis_chain(config=None) -> Runnable`  
-  Returns: LangChain pipeline; no side effects.  
-  Used for advanced integrations/tests.
 
 - `generate_llm_analysis(technical_summary, config=None) -> LLMAnalysisResult`  
   Side effects: remote LLM call.  
@@ -683,7 +677,7 @@ AnalysisHistory.record()
 - `AnalysisHistory.as_dataframe(entries=None) -> pd.DataFrame`  
   Used in: Streamlit tabs.
 
-- `make_cache_key(params, last_timestamp) -> dict`  
+- `make_cache_key(params, last_timestamp, lower_last_timestamp=None) -> dict`  
   Deterministic key used across CLI/Streamlit/Playbook.
 
 **Core hot path**: `AnalysisHistory.record`.
@@ -771,7 +765,7 @@ main()
 
 Key public-ish helpers (`st` prefix indicates Streamlit coupling):
 
-- `AnalysisParams` dataclass with `from_state`, `to_state`, `dataset_request`, `cache_payload`, `history_payload`, `data_path`.
+- `AnalysisParams` dataclass with `from_state`, `to_state`, `higher_dataset_request`, `lower_dataset_request`, `cache_payload`, `history_payload`, `data_path`.
 - `render_sidebar(defaults) -> (AnalysisParams, bool)`  
   Builds the sidebar form.
 
@@ -800,7 +794,7 @@ Key public-ish helpers (`st` prefix indicates Streamlit coupling):
 ---
 
 ## 9. Data & Storage
-- **CSV caches**: `default_data_path(ticker)` → e.g., `NSEI_ohlc.csv`. Rounded per `round_digits`.
+- **CSV caches**: `default_data_path(ticker, interval)` → e.g., `NSEI_1d_ohlc.csv`. Rounded per `round_digits`.
 - **History JSON**: `analysis_history.json` (see example entry committed). Stores summary, LLM outputs, playbook payloads.
 - **Vector store**: `playbook_index/` containing `index.faiss`, `index.pkl`. Persisted via `FAISS.save_local`.
 - **Temporary artifacts**: Streamlit downloads produced on demand (not persisted).

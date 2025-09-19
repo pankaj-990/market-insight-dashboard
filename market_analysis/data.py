@@ -17,15 +17,21 @@ _INDICATOR_COLUMNS = ["EMA_30", "EMA_200", "RSI_14"]
 _ALL_COLUMNS = _PRICE_COLUMNS + _INDICATOR_COLUMNS
 
 
-def default_data_filename(ticker: str) -> str:
-    slug = re.sub(r"[^0-9A-Za-z]+", "_", ticker).strip("_")
-    if not slug:
-        slug = "dataset"
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^0-9A-Za-z]+", "_", value).strip("_")
+    return slug or "dataset"
+
+
+def default_data_filename(ticker: str, interval: str | None = None) -> str:
+    slug = _slugify(ticker)
+    interval_slug = _slugify(interval) if interval else ""
+    if interval_slug:
+        return f"{slug}_{interval_slug}_ohlc.csv"
     return f"{slug}_ohlc.csv"
 
 
-def default_data_path(ticker: str) -> Path:
-    return Path(default_data_filename(ticker))
+def default_data_path(ticker: str, interval: str | None = None) -> Path:
+    return Path(default_data_filename(ticker, interval=interval))
 
 
 @dataclass(slots=True)
@@ -52,6 +58,7 @@ class DataFetcher:
             data.columns = data.columns.get_level_values(0)
 
         df = data[_PRICE_COLUMNS].copy()
+        df.index.name = "Date"
         df["EMA_30"] = ta.ema(df["Close"], length=30)
         df["EMA_200"] = ta.ema(df["Close"], length=200)
         df["RSI_14"] = ta.rsi(df["Close"], length=14)
@@ -84,7 +91,7 @@ class DatasetRequest:
         """Return the cache path as an expanded :class:`~pathlib.Path`."""
         if self.data_path is not None:
             return Path(self.data_path).expanduser()
-        return default_data_path(self.ticker)
+        return default_data_path(self.ticker, interval=self.interval)
 
     def create_fetcher(self) -> DataFetcher:
         """Instantiate a :class:`DataFetcher` for the current request."""
@@ -149,13 +156,32 @@ def load_cached_data(path: Path | str) -> pd.DataFrame:
     if not csv_path.exists():
         raise FileNotFoundError(f"Data file not found: {csv_path}")
 
-    df = pd.read_csv(csv_path, parse_dates=["Date"], index_col="Date")
+    try:
+        df = pd.read_csv(csv_path, parse_dates=["Date"], index_col="Date")
+    except ValueError:
+        # Older caches (especially intraday) may store the index under a different column.
+        raw = pd.read_csv(csv_path)
+        if raw.empty:
+            raise
+        date_column = None
+        for candidate in ("Date", "Datetime", "date", "datetime", raw.columns[0]):
+            if candidate in raw.columns:
+                date_column = candidate
+                break
+        if date_column is None:
+            raise
+        if date_column != "Date":
+            raw = raw.rename(columns={date_column: "Date"})
+        raw["Date"] = pd.to_datetime(raw["Date"])
+        df = raw.set_index("Date")
+
     missing_columns = [col for col in _ALL_COLUMNS if col not in df.columns]
     if missing_columns:
         raise ValueError(
             "Data file is missing expected columns: " + ", ".join(missing_columns)
         )
 
+    df.index.name = "Date"
     return df
 
 

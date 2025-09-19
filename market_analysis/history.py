@@ -57,14 +57,20 @@ class AnalysisHistory:
         for entry in items:
             params = entry.get("params", {})
             cache_key = entry.get("cache_key", {})
+            lower_interval = params.get("lower_interval") or cache_key.get(
+                "lower_interval"
+            )
             records.append(
                 {
                     "Recorded": entry.get("timestamp"),
                     "Ticker": params.get("ticker"),
                     "Period": params.get("period"),
                     "Interval": params.get("interval"),
+                    "Lower Interval": lower_interval,
+                    "Lower Period": params.get("lower_period"),
                     "As Of": params.get("as_of") or cache_key.get("last_timestamp"),
                     "Last Candle": cache_key.get("last_timestamp"),
+                    "Lower Last Candle": cache_key.get("lower_last_timestamp"),
                     "LLM": "Yes" if entry.get("llm_text") else "No",
                 }
             )
@@ -74,9 +80,13 @@ class AnalysisHistory:
         return df
 
 
-def make_cache_key(params: Dict[str, Any], last_timestamp: str) -> Dict[str, Any]:
+def make_cache_key(
+    params: Dict[str, Any],
+    last_timestamp: str,
+    lower_last_timestamp: Optional[str] = None,
+) -> Dict[str, Any]:
     """Return a serialisable cache key for analysis results."""
-    return {
+    key = {
         "ticker": params.get("ticker"),
         "period": params.get("period"),
         "interval": params.get("interval"),
@@ -84,6 +94,20 @@ def make_cache_key(params: Dict[str, Any], last_timestamp: str) -> Dict[str, Any
         "data_path": params.get("data_path"),
         "last_timestamp": last_timestamp,
     }
+
+    if params.get("lower_interval"):
+        key.update(
+            {
+                "lower_period": params.get("lower_period"),
+                "lower_interval": params.get("lower_interval"),
+                "lower_data_path": params.get("lower_data_path"),
+                "lower_key_window": params.get("lower_key_window"),
+                "lower_recent_rows": params.get("lower_recent_rows"),
+                "lower_last_timestamp": lower_last_timestamp,
+            }
+        )
+
+    return key
 
 
 __all__ = ["AnalysisHistory", "make_cache_key"]

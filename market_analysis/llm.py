@@ -17,10 +17,15 @@ from .settings import get_setting
 _DEFAULT_MODEL = "deepseek/deepseek-chat-v3.1:free"
 _DEFAULT_TEMPERATURE = 0.1
 _DEFAULT_API_BASE = "https://openrouter.ai/api/v1"
-_SYSTEM_PROMPT = (
-    "You are an expert financial technical analyst who crafts structured, action-oriented "
-    "trading insights strictly based on the provided data."
-)
+_SYSTEM_PROMPT = dedent(
+    """
+    You are an expert financial technical analyst. Deliver decisive, action-oriented trading
+    insights strictly from the provided data. Always choose a directional bias (bullish, bearish,
+    or sideways) and state the key invalidation level that would negate it. Avoid vague hedging
+    language such as "maybe", "possibly", "might", or "could consider"—use direct present-tense
+    statements and keep each table cell concise (<= 12 words).
+    """
+).strip()
 
 
 class TableSection(BaseModel):
@@ -64,8 +69,13 @@ def _build_prompt() -> ChatPromptTemplate:
                     {technical_summary}
 
                     Please analyse the summary and populate every table in the JSON schema below.
-                    Each table cell must be concise (<=2 lines) and focus on actionable insights.
-                    Assume the trade under consideration is a positional setup with a holding window of 2 to 30 weeks; tailor all guidance to that timeframe.
+
+                    Requirements:
+                    - State a clear directional bias and preferred trade posture.
+                    - Highlight the most decisive evidence first; cite the exact price/indicator level.
+                    - Include an invalidation trigger or stop reference wherever risk is discussed.
+                    - Keep wording crisp (<= 12 words per table cell) and avoid filler.
+                    - Assume the trade setup targets a 2 to 30 week holding window.
 
                     {format_instructions}
                     """
@@ -149,26 +159,6 @@ def format_prompt(technical_summary: str) -> str:
         role = getattr(message, "type", getattr(message, "role", "message"))
         lines.append(f"[{role.upper()}]\n{message.content}")
     return "\n\n".join(lines)
-
-
-def create_analysis_chain(
-    config: Optional[LLMConfig] = None,
-) -> Runnable[Mapping[str, Any], AnalysisTables]:
-    """Build the LangChain Runnable that returns structured analysis tables."""
-    cfg = config or LLMConfig.from_env()
-    parser = _create_parser()
-    prompt = _build_prompt().partial(
-        format_instructions=parser.get_format_instructions()
-    )
-
-    llm = ChatOpenAI(
-        model=cfg.model,
-        temperature=cfg.temperature,
-        openai_api_key=cfg.api_key,
-        openai_api_base=cfg.api_base,
-    )
-
-    return prompt | llm | parser
 
 
 def generate_llm_analysis(

@@ -11,6 +11,7 @@ import pandas as pd
 
 from market_analysis import (
     DatasetRequest,
+    build_multi_timeframe_summary,
     build_technical_summary,
     create_playbook_builder,
     ensure_dataset,
@@ -51,6 +52,40 @@ def build_parser() -> argparse.ArgumentParser:
         "--interval",
         default="1d",
         help="Sampling interval accepted by yfinance (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--lower-interval",
+        default="1h",
+        help=(
+            "Lower timeframe sampling interval (default: %(default)s). "
+            "Set to 'none' to disable multi-timeframe analysis."
+        ),
+    )
+    parser.add_argument(
+        "--lower-period",
+        default="60d",
+        help=(
+            "Lookback period for the lower timeframe (default: %(default)s). "
+            "Ignored when --lower-interval is 'none'."
+        ),
+    )
+    parser.add_argument(
+        "--lower-key-window",
+        default=30,
+        type=int,
+        help=(
+            "Recent high/low window measured in lower timeframe candles "
+            "(default: %(default)s)."
+        ),
+    )
+    parser.add_argument(
+        "--lower-recent-rows",
+        default=20,
+        type=int,
+        help=(
+            "Number of lower timeframe candles to include in the summary table "
+            "(default: %(default)s, capped at 12 in the prompt)."
+        ),
     )
     parser.add_argument(
         "--round-digits",
@@ -163,30 +198,72 @@ def _run_single_analysis(args: argparse.Namespace, as_of: Optional[date]) -> Non
     header_label = as_of.isoformat() if as_of is not None else "latest"
     print(f"=== Analysis for {args.ticker} (as of {header_label}) ===")
 
-    request = DatasetRequest(
+    def _trim_to_as_of(frame: pd.DataFrame, label: str) -> pd.DataFrame:
+        if as_of is None:
+            return frame
+        cutoff = pd.Timestamp(as_of)
+        index_tz = getattr(frame.index, "tz", None)
+        if index_tz is not None and cutoff.tzinfo is None:
+            cutoff = cutoff.tz_localize(index_tz)
+        trimmed = frame.loc[:cutoff]
+        if trimmed.empty:
+            raise ValueError(
+                f"No {label} candles available on or before the requested as-of date. "
+                f"Increase the --period for that timeframe or choose a later date."
+            )
+        return trimmed
+
+    higher_request = DatasetRequest(
         ticker=args.ticker,
         period=args.period,
         interval=args.interval,
         round_digits=args.round_digits,
         max_age_days=args.max_age_days,
     )
-    df, source = ensure_dataset(request, force_refresh=args.force_refresh)
+    higher_df, higher_source = ensure_dataset(
+        higher_request, force_refresh=args.force_refresh
+    )
+    higher_df = _trim_to_as_of(higher_df, "higher timeframe")
 
-    if as_of is not None:
-        cutoff = pd.Timestamp(as_of)
-        index_tz = getattr(df.index, "tz", None)
-        if index_tz is not None and cutoff.tzinfo is None:
-            cutoff = cutoff.tz_localize(index_tz)
-        df = df.loc[:cutoff]
-        if df.empty:
-            raise ValueError(
-                "No candles available on or before the requested as-of date. "
-                "Increase the --period or choose a later date."
-            )
+    lower_interval_value = (args.lower_interval or "").strip()
+    use_lower = lower_interval_value and lower_interval_value.lower() != "none"
+    lower_request: DatasetRequest | None = None
+    lower_df: pd.DataFrame | None = None
+    lower_source: str | None = None
 
-    print(f"Using {source} data from {request.resolved_path()}")
+    if use_lower:
+        lower_period_value = (args.lower_period or args.period).strip()
+        lower_request = DatasetRequest(
+            ticker=args.ticker,
+            period=lower_period_value,
+            interval=lower_interval_value,
+            round_digits=args.round_digits,
+            max_age_days=args.max_age_days,
+        )
+        lower_df, lower_source = ensure_dataset(
+            lower_request, force_refresh=args.force_refresh
+        )
+        lower_df = _trim_to_as_of(lower_df, "lower timeframe")
 
-    summary = build_technical_summary(df)
+    print(
+        f"Using {higher_source} data from {higher_request.resolved_path()} for interval {args.interval}"
+    )
+    if lower_df is not None and lower_source and lower_request is not None:
+        print(
+            f"Using {lower_source} data from {lower_request.resolved_path()} for interval {lower_request.interval}"
+        )
+
+    if lower_df is not None:
+        summary = build_multi_timeframe_summary(
+            higher_df,
+            lower_df,
+            higher_label=f"Higher Timeframe ({args.interval})",
+            lower_label=f"Lower Timeframe ({lower_interval_value})",
+            lower_key_window=args.lower_key_window,
+            lower_recent_rows=args.lower_recent_rows,
+        )
+    else:
+        summary = build_technical_summary(higher_df)
     llm_config: Optional[LLMConfig] = None
     llm_text: Optional[str] = None
     llm_tables: Optional[dict[str, dict[str, Any]]] = None
@@ -208,20 +285,48 @@ def _run_single_analysis(args: argparse.Namespace, as_of: Optional[date]) -> Non
         "period": args.period,
         "interval": args.interval,
         "round_digits": args.round_digits,
-        "data_path": str(request.resolved_path()),
+        "data_path": str(higher_request.resolved_path()),
         "max_age_days": args.max_age_days,
         "as_of": as_of.isoformat() if as_of is not None else None,
     }
-    last_timestamp = df.index[-1].to_pydatetime().isoformat()
-    cache_key = make_cache_key(params_payload, last_timestamp)
+    lower_last_timestamp: str | None = None
+    if lower_df is not None and lower_request is not None:
+        lower_last_timestamp = lower_df.index[-1].to_pydatetime().isoformat()
+        params_payload.update(
+            {
+                "lower_period": lower_request.period,
+                "lower_interval": lower_request.interval,
+                "lower_data_path": str(lower_request.resolved_path()),
+                "lower_key_window": args.lower_key_window,
+                "lower_recent_rows": args.lower_recent_rows,
+            }
+        )
+    higher_last_timestamp = higher_df.index[-1].to_pydatetime().isoformat()
+    cache_key = make_cache_key(
+        params_payload, higher_last_timestamp, lower_last_timestamp
+    )
     timestamp = datetime.utcnow().isoformat()
     entry_id = make_entry_id(cache_key)
+
+    data_source_payload: dict[str, dict[str, str]] = {
+        "higher": {
+            "interval": args.interval,
+            "source": higher_source,
+            "path": str(higher_request.resolved_path()),
+        }
+    }
+    if lower_df is not None and lower_source and lower_request is not None:
+        data_source_payload["lower"] = {
+            "interval": lower_request.interval,
+            "source": lower_source,
+            "path": str(lower_request.resolved_path()),
+        }
 
     history_entry = {
         "timestamp": timestamp,
         "cache_key": cache_key,
         "params": params_payload,
-        "data_source": source,
+        "data_source": data_source_payload,
         "technical_summary": summary,
         "llm_text": llm_text,
         "llm_error": None,
