@@ -52,6 +52,67 @@ The dashboard lets you tweak fetch parameters, inspect the structured summary, d
 - `main.py`: Streamlit dashboard UI built on the shared services with additional UX helpers.
 - `market_analysis/cli.py`: CLI entry point wiring arguments to the shared services.
 
+## Analysis Flow
+```mermaid
+flowchart TD
+    A[User opens Streamlit app] --> B[main()]
+    B --> C[HISTORY.load()]
+    B --> D[_load_default_params()]
+    B --> E[render_sidebar()]
+    E --> F{Run analysis submitted?}
+
+    F -- No --> G[Show instructions & history table]
+    F -- Yes --> H[handle_submission(params, history)]
+
+    H --> I[lower_dataset_request / higher_dataset_request]
+    I --> J{force_refresh?}
+    J -- Yes --> K[ensure_dataset (higher & optional lower)]
+    J -- No --> L[_load_dataset_cached()]
+    K --> M[Dataframes + sources]
+    L --> M
+
+    M --> N[Build cache_key & lookup history]
+    N --> O{Cached summary?}
+    O -- Yes --> P[Reuse technical_summary]
+    O -- No --> Q{Lower timeframe enabled?}
+    Q -- Yes --> R[build_multi_timeframe_summary]
+    Q -- No --> S[build_technical_summary]
+    R --> T[technical_summary]
+    S --> T
+    P --> T
+
+    T --> U{show_prompt enabled?}
+    U -- Yes --> V[format_prompt preview]
+    U -- No --> W[Skip prompt preview]
+    V --> X[prompt_text]
+    W --> X
+
+    T --> Y{call_llm enabled?}
+    Y -- No --> Z[Reuse prior LLM output if available]
+    Y -- Yes --> AA{Cached LLM tables?}
+    AA -- Yes --> AB[Reuse llm_text/tables]
+    AA -- No --> AC[_run_llm()]
+    AC --> AD{Credentials ok?}
+    AD -- No --> AE[Record llm_error]
+    AD -- Yes --> AF[generate_llm_analysis()]
+    AF --> AG[markdown + structured tables]
+    AB --> AH[llm_text/tables]
+    Z --> AH
+    AE --> AH
+    AG --> AH
+
+    X --> AI[Assemble result payload]
+    AH --> AI
+    M --> AI
+    T --> AI
+
+    AI --> AJ[HISTORY.record()]
+    AJ --> AK[_store_result -> session_state]
+
+    AK --> AL[main() renders metrics, charts, tables]
+    AK --> AM[History updated for future reuse]
+```
+
 ## Development Notes
 - All modules are fully type-hinted; keep `from __future__ import annotations` when extending.
 - `python -m compileall main.py market_analysis/cli.py market_analysis` is a quick syntax check.

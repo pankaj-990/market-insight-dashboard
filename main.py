@@ -12,11 +12,17 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from market_analysis import (AnalysisHistory, DatasetRequest,
-                             build_multi_timeframe_summary,
-                             build_technical_summary, ensure_dataset,
-                             format_prompt, generate_llm_analysis,
-                             make_cache_key, make_entry_id)
+from market_analysis import (
+    AnalysisHistory,
+    DatasetRequest,
+    build_multi_timeframe_summary,
+    build_technical_summary,
+    ensure_dataset,
+    format_prompt,
+    generate_llm_analysis,
+    make_cache_key,
+    make_entry_id,
+)
 from market_analysis.data import default_data_path
 from market_analysis.llm import LLMConfig
 

@@ -9,9 +9,14 @@ from typing import Optional
 
 import pandas as pd
 
-from market_analysis import (DatasetRequest, build_multi_timeframe_summary,
-                             build_technical_summary, ensure_dataset,
-                             format_prompt, generate_llm_analysis)
+from market_analysis import (
+    DatasetRequest,
+    build_multi_timeframe_summary,
+    build_technical_summary,
+    ensure_dataset,
+    format_prompt,
+    generate_llm_analysis,
+)
 from market_analysis.llm import LLMConfig
 
 
