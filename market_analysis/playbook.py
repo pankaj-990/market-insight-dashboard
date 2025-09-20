@@ -11,6 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from textwrap import dedent
 from typing import Any, Mapping, Optional, Sequence, Tuple
+from uuid import uuid4
 
 import numpy as np
 from langchain.prompts import ChatPromptTemplate
@@ -201,6 +202,8 @@ class PlaybookBuilder:
         self.llm_config = llm_config
         self._embeddings, warning = self._initialise_embeddings(config, llm_config)
         self.embedding_warning = warning
+        self.index_warning: Optional[str] = None
+        self._corrupt_index_handled = False
         self._llm = ChatOpenAI(
             model=llm_config.model,
             temperature=config.temperature,
@@ -246,20 +249,47 @@ class PlaybookBuilder:
             "Unsupported PLAYBOOK_EMBED_BACKEND value. Use 'auto', 'openai', or 'hash'."
         )
 
+    def _quarantine_corrupt_index(self) -> None:
+        if self._corrupt_index_handled:
+            return
+        self._corrupt_index_handled = True
+        suffix = uuid4().hex[:8]
+        for filename in ("index.faiss", "index.pkl"):
+            file_path = self.config.index_path / filename
+            if not file_path.exists():
+                continue
+            try:
+                new_name = f"{file_path.name}.corrupt-{suffix}"
+                file_path.rename(file_path.with_name(new_name))
+            except Exception:  # pragma: no cover - defensive
+                continue
+
     def _load_store(self) -> Optional[FAISS]:
         if self._store is not None:
             return self._store
         if self.config.index_path.exists():
-            self._store = FAISS.load_local(
-                str(self.config.index_path),
-                self._embeddings,
-                allow_dangerous_deserialization=True,
-            )
+            try:
+                self._store = FAISS.load_local(
+                    str(self.config.index_path),
+                    self._embeddings,
+                    allow_dangerous_deserialization=True,
+                )
+                self.index_warning = None
+            except Exception as exc:  # pragma: no cover - defensive
+                error_text = str(exc).strip().splitlines()[0]
+                self.index_warning = (
+                    f"Existing playbook index at {self.config.index_path} could not "
+                    f"be loaded ({error_text}). The store will be rebuilt from new analyses."
+                )
+                self._quarantine_corrupt_index()
+                self._store = None
         return self._store
 
     def _save_store(self, store: FAISS) -> None:
         self.config.index_path.mkdir(parents=True, exist_ok=True)
         store.save_local(str(self.config.index_path))
+        self.index_warning = None
+        self._corrupt_index_handled = False
 
     def _render_document(
         self, summary: str, llm_text: Optional[str], entry: Mapping[str, Any]

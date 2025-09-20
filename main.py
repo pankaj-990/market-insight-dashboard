@@ -559,8 +559,16 @@ def handle_submission(
     if not reused_playbook:
         playbook_builder = create_playbook_builder()
         if playbook_builder:
-            if playbook_builder.embedding_warning and playbook_error is None:
-                playbook_error = playbook_builder.embedding_warning
+            for warning in (
+                getattr(playbook_builder, "embedding_warning", None),
+                getattr(playbook_builder, "index_warning", None),
+            ):
+                if warning:
+                    playbook_error = (
+                        warning
+                        if not playbook_error
+                        else f"{warning}; {playbook_error}"
+                    )
             try:
                 playbook_result = playbook_builder.generate_playbook(
                     technical_summary=technical_summary,

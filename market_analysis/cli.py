@@ -388,8 +388,10 @@ def _run_single_analysis(
 
     playbook_builder = create_playbook_builder(llm_config)
     embedding_warning = None
+    index_warning = None
     if playbook_builder is not None:
         embedding_warning = getattr(playbook_builder, "embedding_warning", None)
+        index_warning = getattr(playbook_builder, "index_warning", None)
     playbook_result = None
     playbook_error: Optional[str] = None
 
@@ -421,6 +423,13 @@ def _run_single_analysis(
             embedding_warning
             if not playbook_error
             else f"{embedding_warning}; {playbook_error}"
+        )
+
+    if index_warning:
+        playbook_error = (
+            index_warning
+            if not playbook_error
+            else f"{index_warning}; {playbook_error}"
         )
 
     if args.show_playbook:
