@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from textwrap import dedent
 from typing import Any, Mapping, Optional, Sequence, Tuple
@@ -16,6 +18,11 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+
+# Some third-party wheels (e.g. faiss-cpu + numpy) bundle their own OpenMP runtimes.
+# When both load concurrently (common on macOS), Streamlit may abort with libomp clash
+# errors. Allowing duplicates keeps the process running while we investigate a cleaner fix.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 from .llm import LLMConfig
 from .settings import get_setting
@@ -111,11 +118,16 @@ class HashingEmbeddings(Embeddings):
     def _tokenize(self, text: str) -> list[str]:
         return re.findall(r"\b\w+\b", text.lower())
 
+    @staticmethod
+    @lru_cache(maxsize=8192)
+    def _token_hash(token: str) -> int:
+        digest = hashlib.blake2s(token.encode("utf-8"), digest_size=4).digest()
+        return int.from_bytes(digest, "little")
+
     def _embed(self, text: str) -> list[float]:
         vec = np.zeros(self.dimension, dtype=np.float32)
         for token in self._tokenize(text):
-            digest = hashlib.sha256(token.encode("utf-8")).digest()
-            bucket = int.from_bytes(digest[:4], "little") % self.dimension
+            bucket = self._token_hash(token) % self.dimension
             vec[bucket] += 1.0
         norm = np.linalg.norm(vec)
         if norm > 0:
@@ -307,13 +319,18 @@ class PlaybookBuilder:
         document = Document(
             page_content=self._render_document(summary, llm_text, entry),
             metadata=metadata,
+            id=entry_id,
         )
         store = self._load_store()
         try:
             if store is None:
                 store = FAISS.from_documents([document], self._embeddings)
             else:
-                store.add_documents([document])
+                try:
+                    store.delete([entry_id])
+                except ValueError:
+                    pass
+                store.add_documents([document], ids=[entry_id])
         except Exception as exc:  # pragma: no cover - defensive
             raise RuntimeError(f"Failed to embed playbook entry: {exc}") from exc
         self._save_store(store)

@@ -52,7 +52,7 @@ Key flags:
 ```bash
 streamlit run main.py
 ```
-The dashboard lets you tweak fetch parameters, inspect the structured summary, download artefacts, and review prior analyses. Results are cached to `analysis_history.json` (alongside the cached CSV named after the ticker), so re-running with the same parameters skips unnecessary work.
+The dashboard lets you tweak fetch parameters, inspect the structured summary, download artefacts, and review prior analyses. Results are cached to `analysis_history.db` (alongside a Parquet cache named after the ticker), so re-running with the same parameters skips unnecessary work.
 
 ### Strategy Playbook (RAG)
 - Set `OPENROUTER_API_KEY` (or `LLM_API_KEY`) plus optional overrides `PLAYBOOK_EMBED_MODEL`, `PLAYBOOK_TOP_K`, `PLAYBOOK_INDEX_PATH`, and `PLAYBOOK_TEMPERATURE`.
@@ -63,7 +63,7 @@ The dashboard lets you tweak fetch parameters, inspect the structured summary, d
 - `market_analysis/data.py`: Data fetching, indicator calculation, caching, and freshness checks.
 - `market_analysis/summary.py`: Builds the structured technical summary used in prompts.
 - `market_analysis/llm.py`: Prompt assembly and LangChain/OpenRouter integration.
-- `market_analysis/history.py`: Minimal JSON-backed store for past analyses.
+- `market_analysis/history.py`: Lightweight SQLite-backed store for past analyses (with automatic migration from the legacy JSON file).
 - `market_analysis/playbook.py`: Retrieval-augmented indexing and playbook generation.
 - `main.py`: Streamlit dashboard UI built on the shared services with additional UX helpers.
 - `market_analysis/cli.py`: CLI entry point wiring arguments to the shared services.
@@ -116,7 +116,7 @@ The default ticker is `^NSEI`, but the workflow is symbol-agnostic—just point 
 
 | Layer | Module(s) | Responsibility |
 |-------|-----------|----------------|
-| Data acquisition | `market_analysis/data.py` | Download OHLC data, compute indicators, cache CSVs, and enforce freshness rules. |
+| Data acquisition | `market_analysis/data.py` | Download OHLC data, compute indicators, cache Parquet files (with CSV fallback), and enforce freshness rules. |
 | Summaries | `market_analysis/summary.py` | Build deterministic technical narratives from indicator data. |
 | LLM integration | `market_analysis/llm.py` | Configure models, craft prompts, parse structured outputs. |
 | Retrieval & history | `market_analysis/history.py`, `market_analysis/playbook.py` | Persist analysis runs, manage FAISS index, build strategy playbooks. |
@@ -125,10 +125,10 @@ The default ticker is `^NSEI`, but the workflow is symbol-agnostic—just point 
 ### 2.2 Data & Control Flow
 
 1. **User Input** (CLI flags or Streamlit form) → `DatasetRequest` (ticker, period, interval, rounding, cache policy).
-2. **Data Fetch** → `DataFetcher.fetch_and_save` materialises CSVs (auto-named by ticker) and returns a Pandas DataFrame.
+2. **Data Fetch** → `DataFetcher.fetch_and_save` materialises Parquet files (auto-named by ticker) and returns a Pandas DataFrame. Legacy CSV caches are detected automatically.
 3. **Summary Generation** → `build_technical_summary` converts the DataFrame to a structured text synopsis.
 4. **LLM Analysis** → `generate_llm_analysis` feeds the summary into a LangChain chain that returns five tables of insights.
-5. **History Recording** → `AnalysisHistory.record` stores result payloads (summary, tables, metadata) in `analysis_history.json`.
+5. **History Recording** → `AnalysisHistory.record` stores result payloads (summary, tables, metadata) in `analysis_history.db`.
 6. **Playbook RAG** → `PlaybookBuilder` indexes each run in FAISS (OpenAI embeddings or deterministic hashing). A new run retrieves similar entries and prompts the LLM to assemble a strategy playbook.
 7. **Presentation** → The CLI prints markdown; Streamlit renders metric widgets, tables, and playbook insights.
 
@@ -139,8 +139,8 @@ Inputs ──▶ DataFetcher ─▶ Summary ─▶ LLM (LangChain) ─▶ Histor
 ### 2.3 Configuration & Persistence
 
 - **Environment Variables**: Configure LLMs (`OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_TEMPERATURE`), playbook embeddings (`PLAYBOOK_EMBED_MODEL`, `PLAYBOOK_EMBED_BACKEND`, `PLAYBOOK_EMBED_DIM`, `PLAYBOOK_TOP_K`), and storage locations (`PLAYBOOK_INDEX_PATH`).
-- **Caching**: The CSV cache lives next to the repository and is named automatically (`{ticker}_ohlc.csv`).
-- **History Store**: `analysis_history.json` keeps every run, enabling reuse in both front-ends and the RAG index.
+- **Caching**: Parquet caches live next to the repository and are named automatically (`{ticker}_ohlc.parquet`). Legacy CSV files are still detected on load.
+- **History Store**: `analysis_history.db` keeps every run, enabling reuse in both front-ends and the RAG index.
 - **Vector Store**: `playbook_index/` holds FAISS data; if remote embeddings fail, a hash-based embedding maintains functionality offline.
 
 ---
@@ -213,7 +213,7 @@ The CLI trims the cached dataset to the requested date before building summaries
 2. **Embedding Backends**: Compare OpenAI embeddings vs. hash embeddings by toggling `PLAYBOOK_EMBED_BACKEND`.
 3. **FAISS Vector Store**: Inspect `playbook_index/` to understand how LangChain serialises vector stores.
 4. **Summary Heuristics**: Tweak `market_analysis/summary.py` to incorporate new indicators and watch the downstream LLM output adapt.
-5. **History Analytics**: Analyse `analysis_history.json` to build dashboards or augment the retriever with outcome labels.
+5. **History Analytics**: Analyse `analysis_history.db` to build dashboards or augment the retriever with outcome labels.
 
 ### 4.3 Extend the Project
 
@@ -311,7 +311,7 @@ A shared Python library (`market_analysis/`) powers both a CLI (`market_analysis
                     | args / flags
                     v
 +-------------+   +-------------------+   +--------------------+   +------------------+
-| Data source |-->| DataFetcher / CSV |-->| Summary Builder    |-->| LangChain LLM    |
+| Data source |-->| DataFetcher / Parquet |-->| Summary Builder    |-->| LangChain LLM    |
 | (yfinance)  |   | cache (market_…)  |   | (build_technical…) |   | (ChatOpenAI,     |
 +-------------+   +---------+---------+   +---------+----------+   | Pydantic parser) |
                                 |                     |             +------------------+
@@ -341,7 +341,7 @@ A shared Python library (`market_analysis/`) powers both a CLI (`market_analysis
 - Technical Analysis: `market_analysis/data.py`, `market_analysis/summary.py`
 - LLM & LangChain: `market_analysis/llm.py`, `market_analysis/playbook.py`
 - OpenRouter integration: `LLMConfig` (`market_analysis/llm.py`), `PlaybookBuilder`
-- Storage: CSV caches, `analysis_history.json`, `playbook_index/`
+- Storage: Parquet caches, `analysis_history.db`, `playbook_index/`
 - Configuration: Streamlit secrets (OpenRouter, playbook embeddings), CLI flags, Streamlit session state
 
 ---
@@ -389,7 +389,7 @@ python -m main --ticker ^NSEI --period 6mo --interval 1d --summary-only
 
 # Expected stdout (abridged):
 # === Analysis for ^NSEI (as of latest) ===
-# Using cached data from NSEI_ohlc.csv
+# Using cached data from NSEI_ohlc.parquet
 # TECHNICAL ANALYSIS SUMMARY
 # ...
 # RSI 14: 62.67 (Neutral)
@@ -402,7 +402,7 @@ python -m main --ticker ^NSEI --show-prompt --show-playbook
 # 3. Launch dashboard
 streamlit run main.py
 ```
-When the Streamlit app finishes its first run, expect `analysis_history.json` to contain a structured payload and `playbook_index/` to materialise (if embeddings succeed).
+When the Streamlit app finishes its first run, expect `analysis_history.db` to contain a structured payload and `playbook_index/` to materialise (if embeddings succeed).
 
 ---
 
@@ -435,7 +435,7 @@ When the Streamlit app finishes its first run, expect `analysis_history.json` to
 
 ### Performance notes
 - All indicator calculations are vectorised.
-- CSV caching avoids redundant network calls (`ensure_dataset` controls freshness with `max_age_days` and `is_stale`).
+- Parquet caching avoids redundant network calls (`ensure_dataset` controls freshness with `max_age_days` and `is_stale`).
 - Streamlit keeps DataFrame in session state to prevent recomputation within a run.
 
 ---
@@ -492,7 +492,7 @@ python -m main --ticker NIFTY --period 1y --interval 1d --show-prompt --show-pla
 | `--ticker` | str | `^NSEI` | No | Yahoo Finance symbol |
 | `--period` | str | `1y` | No | yfinance period (e.g., `6mo`, `max`) |
 | `--interval` | str | `1d` | No | Candle interval (`1d`, `1wk`, etc.) |
-| `--round-digits` | int | `2` | No | Rounding before CSV write |
+| `--round-digits` | int | `2` | No | Rounding before Parquet write |
 | `--max-age-days` | int | `3` | No | Cache freshness; `-1` disables |
 | `--force-refresh` | bool | False | No | Always refetch |
 | `--model` | str | None | No | Override LLM model |
@@ -504,9 +504,9 @@ python -m main --ticker NIFTY --period 1y --interval 1d --show-prompt --show-pla
 | `--show-playbook` | bool | False | No | Display RAG playbook insights |
 
 **I/O**
-- Input: network call to yfinance unless cached CSV present; secrets loaded from Streamlit or env vars.
+- Input: network call to yfinance unless cached Parquet present; secrets loaded from Streamlit or env vars.
 - Output: stdout (plain text + markdown tables); exit code `0` on success, `1` on unexpected exception (captured per run date).
-- Artefacts: CSV caches named `<ticker>_ohlc.csv`, history entry appended.
+- Artefacts: Parquet caches named `<ticker>_ohlc.parquet`, history entry appended.
 
 **Examples**
 1. Compute RSI/EMA summary only: `python -m main --ticker AAPL --summary-only`
@@ -534,7 +534,7 @@ python -m main --ticker NIFTY --period 1y --interval 1d --show-prompt --show-pla
 1. `AnalysisParams.higher_dataset_request` / `.lower_dataset_request` translate form to `DatasetRequest` objects.
 2. `handle_submission` orchestrates fetch → summary → LLM → playbook → history record.
 3. Results cached under `analysis_result`; errors under `analysis_error`.
-4. `AnalysisHistory` persists to `analysis_history.json`.
+4. `AnalysisHistory` persists to `analysis_history.db` (with automatic import from the legacy JSON file on first run).
 
 **Interactive elements**
 - Candlestick plot via Plotly (`_plot_candlestick`).
@@ -568,7 +568,7 @@ ensure_dataset()
 ```
 
 - `default_data_filename(ticker: str, interval: str | None = None) -> str`  
-  Summary: slugifies ticker and optional interval → `{slug}_{interval}_ohlc.csv`.  
+  Summary: slugifies ticker and optional interval → `{slug}_{interval}_ohlc.parquet`.  
   Returns: filename. No side effects. Used by `default_data_path`.
 
 - `default_data_path(ticker: str, interval: str | None = None) -> Path`  
@@ -582,19 +582,19 @@ ensure_dataset()
   Used in: `DataFetcher.fetch_and_save`, `ensure_dataset`.
 
 - `DataFetcher.fetch_and_save(self, path, decimal_places=None) -> pd.DataFrame`  
-  Side effects: writes CSV via `save_dataframe`.  
+  Side effects: writes Parquet via `save_dataframe`.  
   Used in: `ensure_dataset`.
 
 - `DatasetRequest.resolved_path(self) -> Path`  
   Returns: expanded cache path.  
-  Used in: CLI/Streamlit to reference CSV.
+  Used in: CLI/Streamlit to reference Parquet caches.
 
 - `DatasetRequest.create_fetcher(self) -> DataFetcher`  
   Used in: `ensure_dataset`.
 
 - `ensure_dataset(request, force_refresh=False) -> tuple[pd.DataFrame, str]`  
   Summary: returns DataFrame plus source label (`freshly downloaded`, `refreshed`, `cached`).  
-  Side effects: may write CSV.  
+  Side effects: may write Parquet.  
   Used in: CLI `_run_single_analysis`, Streamlit `handle_submission`.
 
 - `is_stale(last_timestamp, max_age_days) -> bool`  
@@ -794,11 +794,11 @@ Key public-ish helpers (`st` prefix indicates Streamlit coupling):
 ---
 
 ## 9. Data & Storage
-- **CSV caches**: `default_data_path(ticker, interval)` → e.g., `NSEI_1d_ohlc.csv`. Rounded per `round_digits`.
-- **History JSON**: `analysis_history.json` (see example entry committed). Stores summary, LLM outputs, playbook payloads.
+- **Parquet caches**: `default_data_path(ticker, interval)` → e.g., `NSEI_1d_ohlc.parquet`. Rounded per `round_digits`.
+- **History DB**: `analysis_history.db` (see example entry committed in previous revisions). Stores summary, LLM outputs, playbook payloads.
 - **Vector store**: `playbook_index/` containing `index.faiss`, `index.pkl`. Persisted via `FAISS.save_local`.
 - **Temporary artifacts**: Streamlit downloads produced on demand (not persisted).
-- **Data sources**: Yahoo Finance via `yfinance.download`. Sample offline CSVs included (`NSEI_ohlc.csv`, `NSEBANK_ohlc.csv`) for demos.
+- **Data sources**: Yahoo Finance via `yfinance.download`. Legacy sample CSVs (`NSEI_ohlc.csv`, `NSEBANK_ohlc.csv`) remain for demos and are auto-detected alongside the new Parquet caches.
 
 ---
 
@@ -822,7 +822,7 @@ Key public-ish helpers (`st` prefix indicates Streamlit coupling):
 - **Playbook retrieval**: FAISS search over small dataset (<1k entries) ~milliseconds; remote embedding fallback adds latency if `PLAYBOOK_EMBED_BACKEND=openai`.
 - **Caching**: `ensure_dataset` prevents repeated downloads; `HISTORY.record` enables reusing LLM/playbook outputs (flags displayed in Streamlit).
 - **Invalidation**: 
-  - CSV refresh triggered by `max_age_days` or `--force-refresh`.
+- Cache refresh triggered by `max_age_days` or `--force-refresh`.
   - Playbook index updated on each history record.
 
 | Task | Estimated Tokens | Est. Cost (USD) | Notes |
@@ -862,7 +862,7 @@ Key public-ish helpers (`st` prefix indicates Streamlit coupling):
    - Ensure consistent column schema to keep summary builder/LLM stable.
 
 5. **Backtesting module** (future work)  
-   - Leverage cached CSV + indicators.  
+   - Leverage cached Parquet + indicators.  
    - Persist results to history for RAG context.
 
 ---
@@ -870,7 +870,7 @@ Key public-ish helpers (`st` prefix indicates Streamlit coupling):
 ## Optional Variables
 - `{{SUPPORTED_SYMBOLS}}`: Symbol-agnostic; defaults to `^NSEI` but accepts any Yahoo Finance ticker.
 - `{{DEFAULT_TIMEFRAMES}}`: CLI defaults (`period=1y`, `interval=1d`); Streamlit options `["1d", "1wk", "1mo"]`.
-- `{{OHLC_STORE}}`: `<ticker>_ohlc.csv` in repository root (configurable via `DatasetRequest.data_path`).
+- `{{OHLC_STORE}}`: `<ticker>_ohlc.parquet` in repository root (configurable via `DatasetRequest.data_path`).
 - `{{OPENROUTER_MODELS}}`: Default `deepseek/deepseek-chat-v3.1:free`; override via `OPENROUTER_MODEL` or CLI `--model`.
 - `{{AGENT_TYPE}}`: Not implemented (direct chain usage).
 - `{{VECTOR_STORE}}`: FAISS index stored under `playbook_index/`.

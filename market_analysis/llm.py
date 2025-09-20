@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from textwrap import dedent
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Optional
 
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
-from langchain_core.runnables import Runnable
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
@@ -193,7 +192,6 @@ def generate_llm_analysis(
 
 __all__ = [
     "LLMConfig",
-    "create_analysis_chain",
     "generate_llm_analysis",
     "format_prompt",
     "LLMAnalysisResult",

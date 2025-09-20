@@ -44,7 +44,7 @@ Key flags:
 ```bash
 streamlit run main.py
 ```
-The dashboard lets you tweak fetch parameters, inspect the structured summary, download artefacts, and review prior analyses. Results are cached to `analysis_history.json` (alongside the cached CSV named after the ticker), so re-running with the same parameters skips unnecessary work.
+The dashboard lets you tweak fetch parameters, inspect the structured summary, download artefacts, and review prior analyses. Results are cached to `analysis_history.db` (alongside a Parquet file named after the ticker), so re-running with the same parameters skips unnecessary work.
 
 ### Strategy Playbook (RAG)
 - Set `OPENROUTER_API_KEY` (or `LLM_API_KEY`) plus optional overrides `PLAYBOOK_EMBED_MODEL`, `PLAYBOOK_TOP_K`, `PLAYBOOK_INDEX_PATH`, and `PLAYBOOK_TEMPERATURE`.
@@ -55,7 +55,7 @@ The dashboard lets you tweak fetch parameters, inspect the structured summary, d
 - `market_analysis/data.py`: Data fetching, indicator calculation, caching, and freshness checks.
 - `market_analysis/summary.py`: Builds the structured technical summary used in prompts.
 - `market_analysis/llm.py`: Prompt assembly and LangChain/OpenRouter integration.
-- `market_analysis/history.py`: Minimal JSON-backed store for past analyses.
+- `market_analysis/history.py`: Lightweight SQLite-backed store for past analyses.
 - `market_analysis/playbook.py`: Retrieval-augmented indexing and playbook generation.
 - `main.py`: Streamlit dashboard UI built on the shared services with additional UX helpers.
 - `market_analysis/cli.py`: CLI entry point wiring arguments to the shared services.

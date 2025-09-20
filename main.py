@@ -33,7 +33,7 @@ st.set_page_config(
     layout="wide",
 )
 
-HISTORY = AnalysisHistory(Path("analysis_history.json"))
+HISTORY = AnalysisHistory(Path("analysis_history.db"))
 
 
 PERIOD_OPTIONS = ["1mo", "3mo", "6mo", "1y", "2y", "5y", "ytd", "max"]
@@ -42,6 +42,27 @@ LOWER_INTERVAL_OPTIONS = ["30m", "1h", "2h", "4h", "1d"]
 LOWER_PERIOD_SUGGESTIONS = ["30d", "60d", "90d", "180d", "1y"]
 
 SUMMARY_HEADING_RE = re.compile(r"^[A-Z0-9 /()_-]+:?$")
+
+
+@st.cache_data(show_spinner=False)
+def _load_dataset_cached(
+    ticker: str,
+    period: str,
+    interval: str,
+    data_path: Optional[str],
+    round_digits: Optional[int],
+    max_age_days: int,
+) -> tuple[pd.DataFrame, str]:
+    """Shared cache for dataset loading to avoid repeated disk I/O."""
+    request = DatasetRequest(
+        ticker=ticker,
+        period=period,
+        interval=interval,
+        data_path=data_path,
+        round_digits=round_digits,
+        max_age_days=max_age_days,
+    )
+    return ensure_dataset(request, force_refresh=False)
 
 
 def _safe_index(options: list[str], value: str, fallback: int = 0) -> int:
@@ -424,11 +445,25 @@ def handle_submission(
 ) -> None:
     """Execute the end-to-end analysis workflow when the form is submitted."""
     lower_request = params.lower_dataset_request()
+    higher_request = params.higher_dataset_request()
+
+    if params.force_refresh:
+        _load_dataset_cached.clear()
     with st.spinner("Loading market data..."):
         try:
-            higher_df, higher_source = ensure_dataset(
-                params.higher_dataset_request(), force_refresh=params.force_refresh
-            )
+            if params.force_refresh:
+                higher_df, higher_source = ensure_dataset(
+                    higher_request, force_refresh=True
+                )
+            else:
+                higher_df, higher_source = _load_dataset_cached(
+                    higher_request.ticker,
+                    higher_request.period,
+                    higher_request.interval,
+                    str(higher_request.resolved_path()),
+                    higher_request.round_digits,
+                    higher_request.max_age_days,
+                )
         except Exception as exc:
             _store_error(f"Unable to load data: {exc}")
             return
@@ -437,9 +472,19 @@ def handle_submission(
         lower_source: Optional[str] = None
         if lower_request is not None:
             try:
-                lower_df, lower_source = ensure_dataset(
-                    lower_request, force_refresh=params.force_refresh
-                )
+                if params.force_refresh:
+                    lower_df, lower_source = ensure_dataset(
+                        lower_request, force_refresh=True
+                    )
+                else:
+                    lower_df, lower_source = _load_dataset_cached(
+                        lower_request.ticker,
+                        lower_request.period,
+                        lower_request.interval,
+                        str(lower_request.resolved_path()),
+                        lower_request.round_digits,
+                        lower_request.max_age_days,
+                    )
             except Exception as exc:
                 _store_error(f"Unable to load lower timeframe data: {exc}")
                 return
@@ -765,15 +810,15 @@ def main() -> None:
             _format_metric(lower_close, round_digits),
         )
         lcol2.metric(
-            f"Lower EMA 30",
+            "Lower EMA 30",
             _format_metric(lower_ema30, round_digits),
         )
         lcol3.metric(
-            f"Lower EMA 200",
+            "Lower EMA 200",
             _format_metric(lower_ema200, round_digits),
         )
         lcol4.metric(
-            f"Lower RSI 14",
+            "Lower RSI 14",
             _format_metric(lower_rsi, round_digits),
         )
 
@@ -808,7 +853,6 @@ def main() -> None:
                 )
 
     with playbook_tab:
-        st.subheader("Strategy Playbook")
         playbook_info = result.get("playbook")
         playbook_error_msg = result.get("playbook_error")
         if playbook_error_msg:

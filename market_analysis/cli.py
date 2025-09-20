@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Any, Optional
 
@@ -21,6 +21,18 @@ from market_analysis import (
     make_entry_id,
 )
 from market_analysis.llm import LLMConfig
+
+
+@dataclass(slots=True)
+class _LoadedTimeframes:
+    """Pre-loaded dataset state reused across multiple CLI runs."""
+
+    higher_request: DatasetRequest
+    higher_df: pd.DataFrame
+    higher_source: str
+    lower_request: DatasetRequest | None
+    lower_df: pd.DataFrame | None
+    lower_source: str | None
 
 
 def _parse_date(value: str) -> date:
@@ -151,11 +163,37 @@ def run_cli(args: argparse.Namespace) -> None:
     """Execute the workflow according to the provided CLI arguments."""
     run_dates = _resolve_run_dates(args)
 
+    try:
+        timeframes = _load_timeframes(args)
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"Failed to load required datasets: {exc}")
+        return
+
+    print(
+        "Using {source} data from {path} for interval {interval}".format(
+            source=timeframes.higher_source,
+            path=timeframes.higher_request.resolved_path(),
+            interval=args.interval,
+        )
+    )
+    if (
+        timeframes.lower_df is not None
+        and timeframes.lower_source
+        and timeframes.lower_request is not None
+    ):
+        print(
+            "Using {source} data from {path} for interval {interval}".format(
+                source=timeframes.lower_source,
+                path=timeframes.lower_request.resolved_path(),
+                interval=timeframes.lower_request.interval,
+            )
+        )
+
     for index, as_of in enumerate(run_dates):
         if index:
             print("\n" + "=" * 72 + "\n")
         try:
-            _run_single_analysis(args, as_of)
+            _run_single_analysis(args, as_of, timeframes)
         except Exception as exc:  # pragma: no cover - defensive
             label = as_of.isoformat() if as_of is not None else "latest"
             print(f"Failed to analyse {args.ticker} for {label}: {exc}")
@@ -193,7 +231,53 @@ def _resolve_run_dates(args: argparse.Namespace) -> list[Optional[date]]:
     return [None]
 
 
-def _run_single_analysis(args: argparse.Namespace, as_of: Optional[date]) -> None:
+def _load_timeframes(args: argparse.Namespace) -> _LoadedTimeframes:
+    """Fetch higher/lower timeframe datasets once per CLI invocation."""
+    higher_request = DatasetRequest(
+        ticker=args.ticker,
+        period=args.period,
+        interval=args.interval,
+        round_digits=args.round_digits,
+        max_age_days=args.max_age_days,
+    )
+    higher_df, higher_source = ensure_dataset(
+        higher_request, force_refresh=args.force_refresh
+    )
+
+    lower_interval_value = (args.lower_interval or "").strip()
+    use_lower = lower_interval_value and lower_interval_value.lower() != "none"
+
+    lower_request: DatasetRequest | None = None
+    lower_df: pd.DataFrame | None = None
+    lower_source: str | None = None
+    if use_lower:
+        lower_period_value = (args.lower_period or args.period).strip()
+        lower_request = DatasetRequest(
+            ticker=args.ticker,
+            period=lower_period_value,
+            interval=lower_interval_value,
+            round_digits=args.round_digits,
+            max_age_days=args.max_age_days,
+        )
+        lower_df, lower_source = ensure_dataset(
+            lower_request, force_refresh=args.force_refresh
+        )
+
+    return _LoadedTimeframes(
+        higher_request=higher_request,
+        higher_df=higher_df,
+        higher_source=higher_source,
+        lower_request=lower_request,
+        lower_df=lower_df,
+        lower_source=lower_source,
+    )
+
+
+def _run_single_analysis(
+    args: argparse.Namespace,
+    as_of: Optional[date],
+    timeframes: _LoadedTimeframes,
+) -> None:
     """Execute a single analysis for ``as_of`` (or latest when ``None``)."""
     header_label = as_of.isoformat() if as_of is not None else "latest"
     print(f"=== Analysis for {args.ticker} (as of {header_label}) ===")
@@ -211,54 +295,22 @@ def _run_single_analysis(args: argparse.Namespace, as_of: Optional[date]) -> Non
                 f"No {label} candles available on or before the requested as-of date. "
                 f"Increase the --period for that timeframe or choose a later date."
             )
-        return trimmed
+        return trimmed.copy()
 
-    higher_request = DatasetRequest(
-        ticker=args.ticker,
-        period=args.period,
-        interval=args.interval,
-        round_digits=args.round_digits,
-        max_age_days=args.max_age_days,
-    )
-    higher_df, higher_source = ensure_dataset(
-        higher_request, force_refresh=args.force_refresh
-    )
-    higher_df = _trim_to_as_of(higher_df, "higher timeframe")
+    higher_df = _trim_to_as_of(timeframes.higher_df, "higher timeframe")
 
-    lower_interval_value = (args.lower_interval or "").strip()
-    use_lower = lower_interval_value and lower_interval_value.lower() != "none"
-    lower_request: DatasetRequest | None = None
+    lower_request = timeframes.lower_request
     lower_df: pd.DataFrame | None = None
-    lower_source: str | None = None
-
-    if use_lower:
-        lower_period_value = (args.lower_period or args.period).strip()
-        lower_request = DatasetRequest(
-            ticker=args.ticker,
-            period=lower_period_value,
-            interval=lower_interval_value,
-            round_digits=args.round_digits,
-            max_age_days=args.max_age_days,
-        )
-        lower_df, lower_source = ensure_dataset(
-            lower_request, force_refresh=args.force_refresh
-        )
-        lower_df = _trim_to_as_of(lower_df, "lower timeframe")
-
-    print(
-        f"Using {higher_source} data from {higher_request.resolved_path()} for interval {args.interval}"
-    )
-    if lower_df is not None and lower_source and lower_request is not None:
-        print(
-            f"Using {lower_source} data from {lower_request.resolved_path()} for interval {lower_request.interval}"
-        )
+    lower_source = timeframes.lower_source
+    if lower_request is not None and timeframes.lower_df is not None:
+        lower_df = _trim_to_as_of(timeframes.lower_df, "lower timeframe")
 
     if lower_df is not None:
         summary = build_multi_timeframe_summary(
             higher_df,
             lower_df,
             higher_label=f"Higher Timeframe ({args.interval})",
-            lower_label=f"Lower Timeframe ({lower_interval_value})",
+            lower_label=f"Lower Timeframe ({lower_request.interval})",
             lower_key_window=args.lower_key_window,
             lower_recent_rows=args.lower_recent_rows,
         )
@@ -285,7 +337,7 @@ def _run_single_analysis(args: argparse.Namespace, as_of: Optional[date]) -> Non
         "period": args.period,
         "interval": args.interval,
         "round_digits": args.round_digits,
-        "data_path": str(higher_request.resolved_path()),
+        "data_path": str(timeframes.higher_request.resolved_path()),
         "max_age_days": args.max_age_days,
         "as_of": as_of.isoformat() if as_of is not None else None,
     }
@@ -311,8 +363,8 @@ def _run_single_analysis(args: argparse.Namespace, as_of: Optional[date]) -> Non
     data_source_payload: dict[str, dict[str, str]] = {
         "higher": {
             "interval": args.interval,
-            "source": higher_source,
-            "path": str(higher_request.resolved_path()),
+            "source": timeframes.higher_source,
+            "path": str(timeframes.higher_request.resolved_path()),
         }
     }
     if lower_df is not None and lower_source and lower_request is not None:

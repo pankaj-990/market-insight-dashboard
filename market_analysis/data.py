@@ -15,6 +15,7 @@ import yfinance as yf
 _PRICE_COLUMNS = ["Open", "High", "Low", "Close"]
 _INDICATOR_COLUMNS = ["EMA_30", "EMA_200", "RSI_14"]
 _ALL_COLUMNS = _PRICE_COLUMNS + _INDICATOR_COLUMNS
+_DEFAULT_SUFFIX = ".parquet"
 
 
 def _slugify(value: str) -> str:
@@ -26,8 +27,8 @@ def default_data_filename(ticker: str, interval: str | None = None) -> str:
     slug = _slugify(ticker)
     interval_slug = _slugify(interval) if interval else ""
     if interval_slug:
-        return f"{slug}_{interval_slug}_ohlc.csv"
-    return f"{slug}_ohlc.csv"
+        return f"{slug}_{interval_slug}_ohlc{_DEFAULT_SUFFIX}"
+    return f"{slug}_ohlc{_DEFAULT_SUFFIX}"
 
 
 def default_data_path(ticker: str, interval: str | None = None) -> Path:
@@ -147,33 +148,57 @@ def save_dataframe(df: pd.DataFrame, path: Path | str) -> None:
     """Write the OHLC/indicator DataFrame to disk."""
     output_path = Path(path).expanduser()
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = output_path.suffix.lower()
+    if suffix == ".parquet":
+        df.to_parquet(output_path)
+        return
     df.to_csv(output_path)
 
 
 def load_cached_data(path: Path | str) -> pd.DataFrame:
     """Load a cached OHLC/indicator CSV produced by :class:`DataFetcher`."""
-    csv_path = Path(path).expanduser()
-    if not csv_path.exists():
-        raise FileNotFoundError(f"Data file not found: {csv_path}")
+    requested_path = Path(path).expanduser()
 
-    try:
-        df = pd.read_csv(csv_path, parse_dates=["Date"], index_col="Date")
-    except ValueError:
-        # Older caches (especially intraday) may store the index under a different column.
-        raw = pd.read_csv(csv_path)
-        if raw.empty:
-            raise
-        date_column = None
-        for candidate in ("Date", "Datetime", "date", "datetime", raw.columns[0]):
-            if candidate in raw.columns:
-                date_column = candidate
-                break
-        if date_column is None:
-            raise
-        if date_column != "Date":
-            raw = raw.rename(columns={date_column: "Date"})
-        raw["Date"] = pd.to_datetime(raw["Date"])
-        df = raw.set_index("Date")
+    def _resolve_existing_file(candidate: Path) -> Path:
+        if candidate.exists():
+            return candidate
+        if candidate.suffix.lower() == ".parquet":
+            legacy = candidate.with_suffix(".csv")
+            if legacy.exists():
+                return legacy
+        if candidate.suffix.lower() == ".csv":
+            alt = candidate.with_suffix(".parquet")
+            if alt.exists():
+                return alt
+        raise FileNotFoundError(f"Data file not found: {candidate}")
+
+    data_path = _resolve_existing_file(requested_path)
+    suffix = data_path.suffix.lower()
+
+    if suffix == ".parquet":
+        df = pd.read_parquet(data_path)
+        if isinstance(df.index, pd.RangeIndex) and "Date" in df.columns:
+            df["Date"] = pd.to_datetime(df["Date"])
+            df = df.set_index("Date")
+    else:
+        try:
+            df = pd.read_csv(data_path, parse_dates=["Date"], index_col="Date")
+        except ValueError:
+            # Older caches (especially intraday) may store the index under a different column.
+            raw = pd.read_csv(data_path)
+            if raw.empty:
+                raise
+            date_column = None
+            for candidate in ("Date", "Datetime", "date", "datetime", raw.columns[0]):
+                if candidate in raw.columns:
+                    date_column = candidate
+                    break
+            if date_column is None:
+                raise
+            if date_column != "Date":
+                raw = raw.rename(columns={date_column: "Date"})
+            raw["Date"] = pd.to_datetime(raw["Date"])
+            df = raw.set_index("Date")
 
     missing_columns = [col for col in _ALL_COLUMNS if col not in df.columns]
     if missing_columns:
