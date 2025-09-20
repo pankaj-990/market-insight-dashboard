@@ -5,21 +5,13 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, replace
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Optional
 
 import pandas as pd
 
-from market_analysis import (
-    DatasetRequest,
-    build_multi_timeframe_summary,
-    build_technical_summary,
-    create_playbook_builder,
-    ensure_dataset,
-    format_prompt,
-    generate_llm_analysis,
-    make_cache_key,
-    make_entry_id,
-)
+from market_analysis import (DatasetRequest, build_multi_timeframe_summary,
+                             build_technical_summary, ensure_dataset,
+                             format_prompt, generate_llm_analysis)
 from market_analysis.llm import LLMConfig
 
 
@@ -145,11 +137,6 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         type=_parse_date,
         help="Run analyses for one or more YYYY-MM-DD dates (space-separated).",
-    )
-    parser.add_argument(
-        "--show-playbook",
-        action="store_true",
-        help="Display strategy playbook insights built via retrieval.",
     )
     return parser
 
@@ -318,7 +305,7 @@ def _run_single_analysis(
         summary = build_technical_summary(higher_df)
     llm_config: Optional[LLMConfig] = None
     llm_text: Optional[str] = None
-    llm_tables: Optional[dict[str, dict[str, Any]]] = None
+
     if args.summary_only:
         print(summary)
         if args.show_prompt:
@@ -329,7 +316,7 @@ def _run_single_analysis(
         llm_config = configure_llm(args)
         llm_result = generate_llm_analysis(summary, llm_config)
         llm_text = llm_result.markdown
-        llm_tables = llm_result.tables
+
         print(llm_text)
 
     params_payload = {
@@ -341,9 +328,9 @@ def _run_single_analysis(
         "max_age_days": args.max_age_days,
         "as_of": as_of.isoformat() if as_of is not None else None,
     }
-    lower_last_timestamp: str | None = None
+
     if lower_df is not None and lower_request is not None:
-        lower_last_timestamp = lower_df.index[-1].to_pydatetime().isoformat()
+
         params_payload.update(
             {
                 "lower_period": lower_request.period,
@@ -353,12 +340,6 @@ def _run_single_analysis(
                 "lower_recent_rows": args.lower_recent_rows,
             }
         )
-    higher_last_timestamp = higher_df.index[-1].to_pydatetime().isoformat()
-    cache_key = make_cache_key(
-        params_payload, higher_last_timestamp, lower_last_timestamp
-    )
-    timestamp = datetime.utcnow().isoformat()
-    entry_id = make_entry_id(cache_key)
 
     data_source_payload: dict[str, dict[str, str]] = {
         "higher": {
@@ -373,84 +354,6 @@ def _run_single_analysis(
             "source": lower_source,
             "path": str(lower_request.resolved_path()),
         }
-
-    history_entry = {
-        "timestamp": timestamp,
-        "cache_key": cache_key,
-        "params": params_payload,
-        "data_source": data_source_payload,
-        "technical_summary": summary,
-        "llm_text": llm_text,
-        "llm_error": None,
-        "entry_id": entry_id,
-        "llm_tables": llm_tables,
-    }
-
-    playbook_builder = create_playbook_builder(llm_config)
-    embedding_warning = None
-    index_warning = None
-    if playbook_builder is not None:
-        embedding_warning = getattr(playbook_builder, "embedding_warning", None)
-        index_warning = getattr(playbook_builder, "index_warning", None)
-    playbook_result = None
-    playbook_error: Optional[str] = None
-
-    if playbook_builder:
-        if args.show_playbook:
-            try:
-                playbook_result = playbook_builder.generate_playbook(
-                    technical_summary=summary,
-                    params=params_payload,
-                    cache_key=cache_key,
-                )
-            except Exception as exc:  # pragma: no cover - defensive
-                playbook_error = f"Playbook generation failed: {exc}"
-        try:
-            playbook_builder.upsert_history_entry(history_entry)
-        except Exception as exc:  # pragma: no cover - defensive
-            message = f"Playbook indexing failed: {exc}"
-            playbook_error = (
-                f"{playbook_error}; {message}" if playbook_error else message
-            )
-    elif args.show_playbook:
-        playbook_error = (
-            "Playbook unavailable: ensure OpenRouter credentials and embedding "
-            "configuration are set."
-        )
-
-    if embedding_warning:
-        playbook_error = (
-            embedding_warning
-            if not playbook_error
-            else f"{embedding_warning}; {playbook_error}"
-        )
-
-    if index_warning:
-        playbook_error = (
-            index_warning
-            if not playbook_error
-            else f"{index_warning}; {playbook_error}"
-        )
-
-    if args.show_playbook:
-        if playbook_result and playbook_result.plan:
-            print("\n=== STRATEGY PLAYBOOK ===\n")
-            print(playbook_result.plan)
-            if playbook_result.cases:
-                print("\nReferenced historical cases:")
-                for case in playbook_result.cases:
-                    score_text = (
-                        f"{case.similarity:.3f}" if case.similarity is not None else "—"
-                    )
-                    print(
-                        f"  - Case {case.rank}: {case.ticker or 'N/A'} "
-                        f"({case.period}/{case.interval}) recorded {case.recorded} "
-                        f"score={score_text}"
-                    )
-        elif playbook_error:
-            print(f"Playbook error: {playbook_error}")
-        else:
-            print("Playbook not available yet (insufficient indexed history).")
 
 
 def main() -> None:

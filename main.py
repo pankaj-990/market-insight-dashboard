@@ -12,18 +12,11 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from market_analysis import (
-    AnalysisHistory,
-    DatasetRequest,
-    build_multi_timeframe_summary,
-    build_technical_summary,
-    create_playbook_builder,
-    ensure_dataset,
-    format_prompt,
-    generate_llm_analysis,
-    make_cache_key,
-    make_entry_id,
-)
+from market_analysis import (AnalysisHistory, DatasetRequest,
+                             build_multi_timeframe_summary,
+                             build_technical_summary, ensure_dataset,
+                             format_prompt, generate_llm_analysis,
+                             make_cache_key, make_entry_id)
 from market_analysis.data import default_data_path
 from market_analysis.llm import LLMConfig
 
@@ -70,46 +63,6 @@ def _safe_index(options: list[str], value: str, fallback: int = 0) -> int:
         return options.index(value)
     except ValueError:
         return fallback
-
-
-def _render_playbook_markdown(plan_text: str) -> None:
-    """Render the LLM playbook output with nicer Streamlit formatting."""
-    lines = plan_text.splitlines()
-    sections: list[tuple[str, str]] = []
-    current_title: Optional[str] = None
-    buffer: list[str] = []
-
-    def _flush() -> None:
-        nonlocal buffer, current_title, sections
-        if current_title is None:
-            return
-        content = "\n".join(buffer).strip()
-        sections.append((current_title, content))
-        buffer = []
-
-    for raw_line in lines:
-        line = raw_line.rstrip()
-        if line.startswith("## "):
-            _flush()
-            current_title = line[3:].strip()
-        else:
-            if current_title is None and line:
-                current_title = "Playbook"
-            buffer.append(line)
-    _flush()
-
-    if not sections:
-        st.markdown(plan_text)
-        return
-
-    for title, content in sections:
-        if not title:
-            title = "Playbook"
-        st.markdown(f"### {title}")
-        if content:
-            st.markdown(content)
-        else:
-            st.info("No guidance provided for this section.")
 
 
 def _summary_to_markdown(summary: str) -> str:
@@ -372,34 +325,35 @@ def render_sidebar(defaults: AnalysisParams) -> tuple[AnalysisParams, bool]:
                 lower_interval_options = list(
                     dict.fromkeys([defaults.lower_interval] + LOWER_INTERVAL_OPTIONS)
                 )
-                lower_interval = st.selectbox(
-                    "Lower interval",
-                    lower_interval_options,
-                    index=_safe_index(lower_interval_options, defaults.lower_interval),
-                )
                 lower_period = st.text_input(
                     "Lower period",
                     value=str(defaults.lower_period),
                     help="Lower timeframe lookback (e.g. 30d, 60d, 1y).",
                 )
-                lower_key_window = int(
-                    st.number_input(
-                        "Lower key window (candles)",
-                        min_value=10,
-                        max_value=200,
-                        value=int(defaults.lower_key_window),
-                        help="Number of lower timeframe candles considered for highs and lows (flattened at 12-row summary).",
-                    )
+                lower_interval = st.selectbox(
+                    "Lower interval",
+                    lower_interval_options,
+                    index=_safe_index(lower_interval_options, defaults.lower_interval),
                 )
-                lower_recent_rows = int(
-                    st.number_input(
-                        "Lower recent rows",
-                        min_value=10,
-                        max_value=60,
-                        value=int(defaults.lower_recent_rows),
-                        help="Rows from the lower timeframe included in the summary table (trimmed to 12 for the prompt).",
-                    )
-                )
+
+                # lower_key_window = int(
+                #     st.number_input(
+                #         "Lower key window (candles)",
+                #         min_value=10,
+                #         max_value=200,
+                #         value=int(defaults.lower_key_window),
+                #         help="Number of lower timeframe candles considered for highs and lows (flattened at 12-row summary).",
+                #     )
+                # )
+                # lower_recent_rows = int(
+                #     st.number_input(
+                #         "Lower recent rows",
+                #         min_value=10,
+                #         max_value=60,
+                #         value=int(defaults.lower_recent_rows),
+                #         help="Rows from the lower timeframe included in the summary table (trimmed to 12 for the prompt).",
+                #     )
+                # )
                 st.caption(
                     f"Lower cache file: {default_data_path(ticker, lower_interval)}"
                 )
@@ -502,16 +456,10 @@ def handle_submission(
 
     reused_summary = False
     reused_llm = False
-    reused_playbook = False
-    playbook_payload: Optional[Dict[str, Any]] = None
-    playbook_error: Optional[str] = None
 
     if existing_entry:
         technical_summary = existing_entry["technical_summary"]
         reused_summary = True
-        playbook_payload = existing_entry.get("playbook")
-        reused_playbook = bool(playbook_payload)
-        playbook_error = existing_entry.get("playbook_error")
     else:
         try:
             if lower_df is not None and lower_request is not None:
@@ -535,8 +483,6 @@ def handle_submission(
     llm_error: Optional[str] = None
     llm_tables: Optional[Dict[str, Any]] = None
 
-    playbook_builder = None
-
     if params.call_llm:
         if (
             existing_entry
@@ -555,31 +501,6 @@ def handle_submission(
         llm_tables = existing_entry.get("llm_tables")
 
     cache_entry_id = make_entry_id(cache_key)
-
-    if not reused_playbook:
-        playbook_builder = create_playbook_builder()
-        if playbook_builder:
-            for warning in (
-                getattr(playbook_builder, "embedding_warning", None),
-                getattr(playbook_builder, "index_warning", None),
-            ):
-                if warning:
-                    playbook_error = (
-                        warning
-                        if not playbook_error
-                        else f"{warning}; {playbook_error}"
-                    )
-            try:
-                playbook_result = playbook_builder.generate_playbook(
-                    technical_summary=technical_summary,
-                    params=params.history_payload(),
-                    cache_key=cache_key,
-                )
-                playbook_payload = playbook_result.to_payload()
-            except Exception as exc:
-                playbook_error = f"Unable to build playbook: {exc}"
-        elif existing_entry and not playbook_payload:
-            playbook_error = existing_entry.get("playbook_error")
 
     data_sources: Dict[str, Dict[str, str]] = {
         "higher": {
@@ -607,19 +528,8 @@ def handle_submission(
         "llm_error": llm_error,
         "llm_tables": llm_tables,
         "entry_id": cache_entry_id,
-        "playbook": playbook_payload,
-        "playbook_error": playbook_error,
     }
     HISTORY.record(history_entry)
-
-    if playbook_builder:
-        try:
-            playbook_builder.upsert_history_entry(history_entry)
-        except Exception as exc:
-            message = f"Failed to persist playbook entry: {exc}"
-            playbook_error = (
-                f"{playbook_error}; {message}" if playbook_error else message
-            )
 
     result_payload = {
         "higher_df": higher_df,
@@ -636,9 +546,6 @@ def handle_submission(
         "cache_key": cache_key,
         "reused_summary": reused_summary,
         "reused_llm": reused_llm,
-        "reused_playbook": reused_playbook,
-        "playbook": playbook_payload,
-        "playbook_error": playbook_error,
         "entry_id": cache_entry_id,
         "higher_last_timestamp": higher_last_timestamp,
         "lower_last_timestamp": lower_last_timestamp,
@@ -786,8 +693,6 @@ def main() -> None:
         status_notes.append("Reused cached technical summary")
     if result.get("reused_llm"):
         status_notes.append("Reused cached LLM analysis")
-    if result.get("reused_playbook"):
-        status_notes.append("Reused cached playbook")
     if status_notes:
         st.caption(" | ".join(status_notes))
 
@@ -830,12 +735,11 @@ def main() -> None:
             _format_metric(lower_rsi, round_digits),
         )
 
-    summary_tab, data_tab, llm_tab, playbook_tab, history_tab = st.tabs(
+    summary_tab, data_tab, llm_tab, history_tab = st.tabs(
         [
             "Technical Summary",
             "Recent Candles",
             "LLM Analysis",
-            "Playbook Insights",
             "History",
         ]
     )
@@ -859,59 +763,6 @@ def main() -> None:
                     file_name=f"llm_prompt_{result['params']['ticker']}.txt",
                     key="download-prompt",
                 )
-
-    with playbook_tab:
-        playbook_info = result.get("playbook")
-        playbook_error_msg = result.get("playbook_error")
-        if playbook_error_msg:
-            st.warning(playbook_error_msg)
-        elif not playbook_info:
-            st.info(
-                "Playbook suggestions will appear once enough historical analyses are "
-                "indexed and embeddings are configured."
-            )
-        else:
-            plan_text = playbook_info.get("plan")
-            cases = playbook_info.get("cases", [])
-            if plan_text:
-                _render_playbook_markdown(plan_text)
-                st.download_button(
-                    "Download playbook (.md)",
-                    plan_text,
-                    file_name=f"playbook_{result['params']['ticker']}.md",
-                    key="download-playbook",
-                )
-            else:
-                st.info("No comparable historical cases were available for this run.")
-            if cases:
-                case_rows = []
-                for case in cases:
-                    similarity_value = case.get("similarity")
-                    case_rows.append(
-                        {
-                            "Case": f"#{case['rank']}",
-                            "Ticker": case.get("ticker"),
-                            "Period": case.get("period"),
-                            "Interval": case.get("interval"),
-                            "Lower Interval": case.get("lower_interval"),
-                            "Recorded": case.get("recorded"),
-                            "Last Candle": case.get("last_timestamp"),
-                            "Lower Last Candle": case.get("lower_last_timestamp"),
-                            "Similarity": (
-                                f"{similarity_value:.3f}"
-                                if isinstance(similarity_value, (int, float))
-                                else "—"
-                            ),
-                            "Snippet": case.get("summary_snippet"),
-                        }
-                    )
-                cases_df = pd.DataFrame(case_rows)
-                st.dataframe(cases_df, use_container_width=True)
-                st.caption(
-                    "Similarity scores derive from vector distance (lower is closer)."
-                )
-            if result.get("reused_playbook"):
-                st.caption("Reused cached playbook insights.")
 
     with data_tab:
         higher_interval_label = higher_info.get(

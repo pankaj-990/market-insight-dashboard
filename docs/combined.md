@@ -18,7 +18,6 @@ A small toolkit for downloading OHLC data for any Yahoo Finance symbol, generati
 - Builds a structured technical summary that is suitable for human review or prompting an LLM.
 - Optional LLM integration via OpenRouter for narrative insights (CLI & Streamlit).
 - Streamlit dashboard with candlestick visualisations, caching, history, and download helpers.
-- Retrieval-augmented *Strategy Playbook* that surfaces comparable historical setups and suggests trades.
 - Structured LLM analysis rendered as data tables for easier review.
 - Reusable core library (`market_analysis`) for data access, caching, summaries, history persistence, and prompt generation.
 
@@ -44,9 +43,7 @@ Key flags:
 - `--force-refresh`: Ignore cached data and refetch.
 - `--model` / `--temperature`: Override OpenRouter defaults.
 - `--show-prompt`: Print the composed LLM prompt to stdout.
-- `--show-playbook`: Display retrieval-backed playbook insights (requires embeddings + indexed history).
 - `--as-of YYYY-MM-DD`: Analyse the state of the market as it stood on the specified date.
-- `--run-dates YYYY-MM-DD [YYYY-MM-DD ...]`: Backfill multiple dates in one command (useful for seeding the playbook index).
 
 ## Streamlit Dashboard
 ```bash
@@ -54,17 +51,12 @@ streamlit run main.py
 ```
 The dashboard lets you tweak fetch parameters, inspect the structured summary, download artefacts, and review prior analyses. Results are cached to `analysis_history.db` (alongside a Parquet cache named after the ticker), so re-running with the same parameters skips unnecessary work.
 
-### Strategy Playbook (RAG)
-- Set `OPENROUTER_API_KEY` (or `LLM_API_KEY`) plus optional overrides `PLAYBOOK_EMBED_MODEL`, `PLAYBOOK_TOP_K`, `PLAYBOOK_INDEX_PATH`, and `PLAYBOOK_TEMPERATURE`.
-- After a few analyses are stored, the Streamlit “Playbook Insights” tab (or CLI `--show-playbook`) retrieves similar historical cases and drafts trade ideas.
-- Historical entries are automatically indexed into a FAISS vector store located at `playbook_index/` by default. Install `faiss-cpu` (already listed in `requirements.txt`) to enable the index. If remote embeddings are unavailable (e.g., OpenRouter does not support them), the app falls back to a lightweight hash-based embedding. You can force this with `PLAYBOOK_EMBED_BACKEND=hash` or stick with OpenAI-compatible embeddings via `PLAYBOOK_EMBED_BACKEND=openai` and a supported model (`PLAYBOOK_EMBED_MODEL`).
 
 ## Architecture Overview
 - `market_analysis/data.py`: Data fetching, indicator calculation, caching, and freshness checks.
 - `market_analysis/summary.py`: Builds the structured technical summary used in prompts.
 - `market_analysis/llm.py`: Prompt assembly and LangChain/OpenRouter integration.
 - `market_analysis/history.py`: Lightweight SQLite-backed store for past analyses (with automatic migration from the legacy JSON file).
-- `market_analysis/playbook.py`: Retrieval-augmented indexing and playbook generation.
 - `main.py`: Streamlit dashboard UI built on the shared services with additional UX helpers.
 - `market_analysis/cli.py`: CLI entry point wiring arguments to the shared services.
 
@@ -77,7 +69,6 @@ The dashboard lets you tweak fetch parameters, inspect the structured summary, d
 ---
 
 ## 2. Market Analysis Guide
-# Market Analysis Playbook: Architecture & LangChain Handbook
 
 This guide serves two roles:
 
@@ -96,7 +87,6 @@ The toolkit automates the lifecycle of generating technical market insights:
 2. **Enrich** the dataset with common indicators (EMA, RSI) and cache the results on disk.
 3. **Summarise** the market structure using rule-based heuristics.
 4. **Analyse** the summary with an LLM to produce trader-friendly tables.
-5. **Retrieve** similar historical scenarios (RAG) and assemble a strategy playbook.
 6. **Serve** results through both a CLI and an interactive Streamlit dashboard.
 
 The default ticker is `^NSEI`, but the workflow is symbol-agnostic—just point it at another ticker.
@@ -105,7 +95,6 @@ The default ticker is `^NSEI`, but the workflow is symbol-agnostic—just point 
 
 - **Shared core library** (`market_analysis`) consumed by CLI (`market_analysis/cli.py`) and Streamlit app (`main.py`).
 - **Structured LLM output** delivered as markdown tables and machine-readable JSON.
-- **Retrieval-Augmented Playbook** that learns from prior runs via a FAISS vector store, with automatic hashing-based embeddings when remote embeddings are unavailable.
 - **History persistence** to avoid redundant work and to enable incremental learning.
 
 ---
@@ -119,7 +108,6 @@ The default ticker is `^NSEI`, but the workflow is symbol-agnostic—just point 
 | Data acquisition | `market_analysis/data.py` | Download OHLC data, compute indicators, cache Parquet files (with CSV fallback), and enforce freshness rules. |
 | Summaries | `market_analysis/summary.py` | Build deterministic technical narratives from indicator data. |
 | LLM integration | `market_analysis/llm.py` | Configure models, craft prompts, parse structured outputs. |
-| Retrieval & history | `market_analysis/history.py`, `market_analysis/playbook.py` | Persist analysis runs, manage FAISS index, build strategy playbooks. |
 | Interfaces | `main.py`, `market_analysis/cli.py` | Provide Streamlit dashboard and CLI automation. |
 
 ### 2.2 Data & Control Flow
@@ -129,19 +117,14 @@ The default ticker is `^NSEI`, but the workflow is symbol-agnostic—just point 
 3. **Summary Generation** → `build_technical_summary` converts the DataFrame to a structured text synopsis.
 4. **LLM Analysis** → `generate_llm_analysis` feeds the summary into a LangChain chain that returns five tables of insights.
 5. **History Recording** → `AnalysisHistory.record` stores result payloads (summary, tables, metadata) in `analysis_history.db`.
-6. **Playbook RAG** → `PlaybookBuilder` indexes each run in FAISS (OpenAI embeddings or deterministic hashing). A new run retrieves similar entries and prompts the LLM to assemble a strategy playbook.
-7. **Presentation** → The CLI prints markdown; Streamlit renders metric widgets, tables, and playbook insights.
 
 ```
-Inputs ──▶ DataFetcher ─▶ Summary ─▶ LLM (LangChain) ─▶ History ─▶ FAISS Playbook ─▶ UI/CLI
 ```
 
 ### 2.3 Configuration & Persistence
 
-- **Environment Variables**: Configure LLMs (`OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_TEMPERATURE`), playbook embeddings (`PLAYBOOK_EMBED_MODEL`, `PLAYBOOK_EMBED_BACKEND`, `PLAYBOOK_EMBED_DIM`, `PLAYBOOK_TOP_K`), and storage locations (`PLAYBOOK_INDEX_PATH`).
 - **Caching**: Parquet caches live next to the repository and are named automatically (`{ticker}_ohlc.parquet`). Legacy CSV files are still detected on load.
 - **History Store**: `analysis_history.db` keeps every run, enabling reuse in both front-ends and the RAG index.
-- **Vector Store**: `playbook_index/` holds FAISS data; if remote embeddings fail, a hash-based embedding maintains functionality offline.
 
 ---
 
@@ -159,12 +142,10 @@ The prompt scaffold lives in `market_analysis/llm.py`:
 
 ### 3.2 Retrieval-Augmented Generation (RAG)
 
-`market_analysis/playbook.py` shows the retrieval stack:
 
 1. **Indexing**: Each history entry is rendered into a `Document` that includes summary text and metadata (ticker, period, last timestamp, etc.).
 2. **Vector Store**: FAISS stores embeddings. The builder tries OpenAI/OpenRouter embeddings first and gracefully falls back to `HashingEmbeddings`—a deterministic, local alternative.
 3. **Retrieval**: `similarity_search_with_score` fetches nearest cases (deduplicating the current entry).
-4. **Playbook Prompt**: A LangChain prompt merges the current summary with retrieved case digests, asking the LLM to produce three sections (Historical Patterns, Strategy Recommendations, Risk Watchlist).
 
 This demonstrates a complete RAG loop—from ingestion to retrieval to synthesis—which you can adapt to other knowledge bases.
 
@@ -186,20 +167,16 @@ Both CLI and Streamlit invoke the same library functions. This encapsulation mak
 pip install -r requirements.txt
 export OPENROUTER_API_KEY=<your_key>
 # Optional: force offline embeddings
-export PLAYBOOK_EMBED_BACKEND=hash
 
-python -m market_analysis.cli --ticker AAPL --show-playbook
 # or launch the dashboard
 streamlit run main.py
 ```
 
 #### Historical Backfills
 
-Populate the playbook with past regimes by replaying analyses for earlier dates:
 
 ```bash
 # Analyse the market as it looked on 2024-01-05
-python -m market_analysis.cli --ticker AAPL --as-of 2024-01-05 --show-playbook
 
 # Backfill multiple trade days in one shot (space-separated YYYY-MM-DD values)
 python -m market_analysis.cli --ticker AAPL --run-dates 2024-01-05 2024-01-12 2024-01-19 --summary-only
@@ -210,14 +187,11 @@ The CLI trims the cached dataset to the requested date before building summaries
 ### 4.2 Experiments to Try
 
 1. **Prompt Iterations**: Modify the prompt (e.g., add volatility commentary) and observe how the structured tables change.
-2. **Embedding Backends**: Compare OpenAI embeddings vs. hash embeddings by toggling `PLAYBOOK_EMBED_BACKEND`.
-3. **FAISS Vector Store**: Inspect `playbook_index/` to understand how LangChain serialises vector stores.
 4. **Summary Heuristics**: Tweak `market_analysis/summary.py` to incorporate new indicators and watch the downstream LLM output adapt.
 5. **History Analytics**: Analyse `analysis_history.db` to build dashboards or augment the retriever with outcome labels.
 
 ### 4.3 Extend the Project
 
-- **Add Fundamentals**: Introduce a fundamentals retriever (news, earnings) and feed it into the playbook prompt.
 - **Agentic Indicators**: Wrap indicator calculations as LangChain tools and let the LLM decide which to compute.
 - **Session Memory**: Incorporate conversational memory in Streamlit so practitioners can interrogate results interactively.
 
@@ -234,7 +208,6 @@ Each extension builds upon LangChain primitives already showcased here.
 - `market_analysis/data.py` – Data acquisition and caching helpers.
 - `market_analysis/summary.py` – Technical summary generation.
 - `market_analysis/llm.py` – Prompt, structured output, LangChain chain definitions.
-- `market_analysis/playbook.py` – FAISS indexing, fallback embeddings, RAG playbook generation.
 - `market_analysis/history.py` – JSON-backed history persistence.
 
 ### 5.2 Environment Variables
@@ -244,12 +217,6 @@ Each extension builds upon LangChain primitives already showcased here.
 | `OPENROUTER_API_KEY` | LLM authentication | _required_ |
 | `OPENROUTER_MODEL` | Override chat model | `deepseek/deepseek-chat-v3.1:free` |
 | `OPENROUTER_TEMPERATURE` | LLM sampling temperature | `0.1` |
-| `PLAYBOOK_EMBED_MODEL` | Remote embedding model | `text-embedding-3-small` |
-| `PLAYBOOK_EMBED_BACKEND` | `auto`, `openai`, or `hash` | `auto` |
-| `PLAYBOOK_EMBED_DIM` | Dimension for hash embeddings | `512` |
-| `PLAYBOOK_TOP_K` | Number of historical cases | `3` |
-| `PLAYBOOK_CASE_SNIPPET` | Snippet length (chars) | `600` |
-| `PLAYBOOK_INDEX_PATH` | FAISS index location | `playbook_index/` |
 
 ---
 
@@ -290,7 +257,6 @@ Use this document as both a reference manual for the project and a living notebo
 ---
 
 ## 1. Executive Overview
-A shared Python library (`market_analysis/`) powers both a CLI (`market_analysis/cli.py`) and a Streamlit dashboard (`main.py`). The workflow fetches Yahoo Finance OHLC data, derives EMA/RSI indicators, constructs a deterministic technical narrative, and optionally enriches it with an OpenRouter-backed LLM plus a retrieval-augmented “strategy playbook”.
 
 **Who it’s for**  
 - Market analysts seeking rapid technical snapshots.  
@@ -324,7 +290,6 @@ A shared Python library (`market_analysis/`) powers both a CLI (`market_analysis
                                 |
                                 v
                         +---------------+
-                        | Playbook RAG  |
                         | (FAISS index, |
                         | ChatOpenAI)   |
                         +-------+-------+
@@ -339,10 +304,6 @@ A shared Python library (`market_analysis/`) powers both a CLI (`market_analysis
 
 **Core components**
 - Technical Analysis: `market_analysis/data.py`, `market_analysis/summary.py`
-- LLM & LangChain: `market_analysis/llm.py`, `market_analysis/playbook.py`
-- OpenRouter integration: `LLMConfig` (`market_analysis/llm.py`), `PlaybookBuilder`
-- Storage: Parquet caches, `analysis_history.db`, `playbook_index/`
-- Configuration: Streamlit secrets (OpenRouter, playbook embeddings), CLI flags, Streamlit session state
 
 ---
 
@@ -367,19 +328,11 @@ pip install -r requirements.txt
 | `OPENROUTER_MODEL` | Optional | `deepseek/deepseek-chat-v3.1:free` | Default chat model routing | same as above |
 | `OPENROUTER_TEMPERATURE` | Optional | `0.1` | Sample temperature override | same |
 | `OPENROUTER_API_BASE` | Optional | `https://openrouter.ai/api/v1` | Endpoint override | same |
-| `PLAYBOOK_INDEX_PATH` | Optional | `playbook_index` | FAISS storage directory | `market_analysis/playbook.py:PlaybookConfig.from_env` |
-| `PLAYBOOK_EMBED_MODEL` | Optional | `text-embedding-3-small` | Embedding SKU for OpenAI-compatible backend | same |
-| `PLAYBOOK_EMBED_BACKEND` | Optional | `auto` | `auto`/`openai`/`hash` embedding selection | same |
-| `PLAYBOOK_EMBED_DIM` | Optional | `512` | Hash embedding dimension | same |
-| `PLAYBOOK_TOP_K` | Optional | `3` | # of similar cases to surface | same |
-| `PLAYBOOK_TEMPERATURE` | Optional | `0.0` | LLM temperature for playbook generation | same |
-| `PLAYBOOK_CASE_SNIPPET` | Optional | `600` | Characters retained per retrieved case | same |
 
 Provide them via Streamlit secrets (preferred) or standard environment variables.
 
 **Run commands**
 - CLI (module style): `python -m main --ticker ^NSEI --summary-only`
-- CLI (file style): `python -m market_analysis.cli --ticker AAPL --show-playbook`
 - Streamlit: `streamlit run main.py -- --ticker ^NSEI` (use `--` to pass custom Streamlit args if needed)
 
 **Minimal end-to-end demo**
@@ -396,13 +349,10 @@ python -m main --ticker ^NSEI --period 6mo --interval 1d --summary-only
 # RECENT PRICE ACTION (Last 7 candles):
 # Date        Open    High ...
 
-# 2. Include LLM narrative & playbook (requires API key & embeddings)
-python -m main --ticker ^NSEI --show-prompt --show-playbook
 
 # 3. Launch dashboard
 streamlit run main.py
 ```
-When the Streamlit app finishes its first run, expect `analysis_history.db` to contain a structured payload and `playbook_index/` to materialise (if embeddings succeed).
 
 ---
 
@@ -419,11 +369,9 @@ When the Streamlit app finishes its first run, expect `analysis_history.db` to c
 - Additional indicators require extending `DataFetcher.fetch`.
 
 ### Strategy blocks
-- No deterministic backtest/strategy classes exist. Strategy insights come from `PlaybookBuilder.generate_playbook` (LLM-driven using retrieved history cases).
 - Entry/exit/position logic is descriptive (LLM markdown) rather than executable.
 
 ### Risk & position sizing
-- Not modelled in code; playbook LLM output may include guidance but nothing is enforced programmatically.
 
 ### Backtest pipeline
 - Absent. Extend by introducing dedicated modules (e.g., `backtest.py`) that consume cached DataFrames.
@@ -452,11 +400,8 @@ When the Streamlit app finishes its first run, expect `analysis_history.db` to c
 ### LangChain components
 | Component | Location | Usage |
 | --- | --- | --- |
-| `ChatPromptTemplate` | `market_analysis.llm:_build_prompt`; `market_analysis.playbook:_PLAYBOOK_PROMPT` | Formats structured system/human messages |
 | `PydanticOutputParser` | `market_analysis.llm:_create_parser` | Enforces schema for five analysis tables |
 | `Runnable` pipeline | `market_analysis.llm:generate_llm_analysis` | Builds prompt → ChatOpenAI → parser internally |
-| `ChatOpenAI` | `market_analysis.llm`, `market_analysis.playbook` | OpenRouter-compatible chat model |
-| `FAISS` | `market_analysis.playbook:PlaybookBuilder` | Vector store for historical summaries |
 | `Embeddings` (`OpenAIEmbeddings`, `HashingEmbeddings`) | same | Document embeddings; hash fallback for offline use |
 | Retrievers | FAISS via `similarity_search_with_score` | Pull top-k historical cases |
 | Tools/Agents | None; logic is direct chain execution |
@@ -470,8 +415,6 @@ When the Streamlit app finishes its first run, expect `analysis_history.db` to c
 - `PydanticOutputParser` rejects malformed outputs (LangChain handles).
 - `format_prompt` exposes composed prompt for audit (`--show-prompt`, Streamlit expander).
 
-### Playbook generation
-- Uses RAG: retrieved case summaries + current summary pass through `_PLAYBOOK_PROMPT`.
 - Embedding backend gracefully downgrades to hashing with warning captured in UI/CLI.
 
 ---
@@ -482,7 +425,6 @@ When the Streamlit app finishes its first run, expect `analysis_history.db` to c
 
 **Usage**
 ```
-python -m main --ticker NIFTY --period 1y --interval 1d --show-prompt --show-playbook
 ```
 
 **Flags**
@@ -501,7 +443,6 @@ python -m main --ticker NIFTY --period 1y --interval 1d --show-prompt --show-pla
 | `--show-prompt` | bool | False | No | Print composed LLM messages |
 | `--as-of` | date | None | No | Analyse candles up to date |
 | `--run-dates` | [date] | None | No | Multiple analyses per invocation |
-| `--show-playbook` | bool | False | No | Display RAG playbook insights |
 
 **I/O**
 - Input: network call to yfinance unless cached Parquet present; secrets loaded from Streamlit or env vars.
@@ -512,7 +453,6 @@ python -m main --ticker NIFTY --period 1y --interval 1d --show-prompt --show-pla
 1. Compute RSI/EMA summary only: `python -m main --ticker AAPL --summary-only`
 2. Backfill multiple historical sessions: `python -m main --ticker BTC-USD --run-dates 2024-01-05 2024-02-02`
 3. Force refresh & inspect prompt: `python -m main --ticker ^NSEBANK --force-refresh --show-prompt`
-4. Generate playbook (requires history & embeddings): `python -m main --ticker ^NSEI --show-playbook`
 5. Swap model & temperature: `python -m main --model openrouter/anthropic/claude-3.5-sonnet --temperature 0.3`
 
 ---
@@ -524,7 +464,6 @@ python -m main --ticker NIFTY --period 1y --interval 1d --show-prompt --show-pla
 | Page/Tab | Purpose |
 | --- | --- |
 | Top metrics | Latest `Close`, `EMA_30`, `EMA_200`, `RSI_14` |
-| Tabs: `Technical Summary`, `Playbook Insights`, `Recent Candles`, `LLM Analysis`, `History` | Mirrors CLI artefacts with downloads & tables |
 
 **Sidebar form (`render_sidebar`)**
 - Inputs: `ticker`, `period`, `interval`, plus lower timeframe toggles (`include_lower`, `lower_interval`, `lower_period`, window sizes), rounding, cache age, LLM toggles.
@@ -532,14 +471,11 @@ python -m main --ticker NIFTY --period 1y --interval 1d --show-prompt --show-pla
 
 **State flow**
 1. `AnalysisParams.higher_dataset_request` / `.lower_dataset_request` translate form to `DatasetRequest` objects.
-2. `handle_submission` orchestrates fetch → summary → LLM → playbook → history record.
 3. Results cached under `analysis_result`; errors under `analysis_error`.
 4. `AnalysisHistory` persists to `analysis_history.db` (with automatic import from the legacy JSON file on first run).
 
 **Interactive elements**
 - Candlestick plot via Plotly (`_plot_candlestick`).
-- Data tables: last 20 candles, playbook case DataFrame, historical runs using `st.dataframe`.
-- Downloads: summary `.txt`, playbook `.md`, prompt `.txt`, OHLC `.csv`.
 
 **LLM panes**
 - `LLM Analysis` tab shows structured tables when `llm_tables` present; fallback to markdown narrative.
@@ -617,7 +553,6 @@ build_technical_summary()
 - `build_technical_summary(df, key_window=20, recent_rows=7) -> str`  
   Summary: Formats TA narrative with levels/momentum tables.  
   Raises: `ValueError` when DataFrame empty or missing required columns.  
-  Used in: CLI, Streamlit, playbook index.
 
 - `_describe_rsi(value)` / `_qualify_comparison(value, ref, positive, negative)`  
   Internal helpers (not exported).
@@ -640,7 +575,6 @@ generate_llm_analysis()
 
 - `LLMConfig.from_env() -> LLMConfig`  
   Raises: `RuntimeError` if API key missing.  
-  Used in: CLI `configure_llm`, Streamlit `_run_llm`, `create_playbook_builder`.
 
 - `format_prompt(technical_summary: str) -> str`  
   Returns: multi-message prompt for audit.  
@@ -678,13 +612,10 @@ AnalysisHistory.record()
   Used in: Streamlit tabs.
 
 - `make_cache_key(params, last_timestamp, lower_last_timestamp=None) -> dict`  
-  Deterministic key used across CLI/Streamlit/Playbook.
 
 **Core hot path**: `AnalysisHistory.record`.
 
-### `market_analysis/playbook.py`
 ```
-PlaybookBuilder.generate_playbook()
  ├─ _load_store()/FAISS
  ├─ similarity_search_with_score()
  ├─ _format_cases_for_prompt()
@@ -694,26 +625,18 @@ PlaybookBuilder.generate_playbook()
 - `make_entry_id(cache_key) -> str`  
   Deterministic JSON string; used as vector-store metadata key.
 
-- `PlaybookConfig.from_env() -> PlaybookConfig`  
   Raises: `ValueError` on invalid backend.  
-  Used in: `create_playbook_builder`.
 
 - `HashingEmbeddings`  
   Deterministic fallback embeddings; side-effect free.
 
-- `PlaybookBuilder.__init__(config, llm_config)`  
   Checks embeddings; stores `embedding_warning` if fallback invoked.
 
-- `PlaybookBuilder.upsert_history_entry(entry)`  
   Side effects: create/update FAISS index on disk.
 
-- `PlaybookBuilder.generate_playbook(technical_summary, params, cache_key)`  
-  Returns `PlaybookResult(plan, cases)`; handles empty store.
 
-- `create_playbook_builder(llm_config=None) -> Optional[PlaybookBuilder]`  
   Returns `None` if configuration missing.
 
-**Core hot paths**: `PlaybookBuilder.upsert_history_entry`, `generate_playbook`.
 
 ### `main.py`
 ```
@@ -723,7 +646,6 @@ main()
            ├─ ensure_dataset()
            ├─ build_technical_summary()
            ├─ generate_llm_analysis()
-           └─ PlaybookBuilder.*
 ```
 
 - `build_parser() -> argparse.ArgumentParser`  
@@ -743,7 +665,6 @@ main()
 
 - `_run_single_analysis(args, as_of)`  
   Core CLI workflow (see diagram).  
-  Side effects: print, LLM call, playbook indexing.
 
 - `_print_prompt(summary)`  
   Pretty-prints prompt.
@@ -759,7 +680,6 @@ main()
  │    ├─ ensure_dataset()
  │    ├─ build_technical_summary()
  │    ├─ _run_llm()
- │    └─ PlaybookBuilder.*
  └─ render tabs/plots/downloads
 ```
 
@@ -787,16 +707,12 @@ Key public-ish helpers (`st` prefix indicates Streamlit coupling):
 
 ## 8. Configuration & Environments
 - **Hierarchy**: Streamlit secrets → environment variables → CLI flags / Streamlit form values.
-- **Profiles**: No explicit dev/staging/prod toggles; mimic via separate secrets files or environment-specific `PLAYBOOK_INDEX_PATH` values.
 - **Secrets**: Store credentials in `.streamlit/secrets.toml` (local) or the Streamlit Cloud UI; rotate by updating secrets and restarting/deploying.
-- **Local dev tips**: Set `PLAYBOOK_EMBED_BACKEND=hash` to avoid remote embedding dependencies; adjust `max_age_days=-1` to keep offline caches fresh indefinitely.
 
 ---
 
 ## 9. Data & Storage
 - **Parquet caches**: `default_data_path(ticker, interval)` → e.g., `NSEI_1d_ohlc.parquet`. Rounded per `round_digits`.
-- **History DB**: `analysis_history.db` (see example entry committed in previous revisions). Stores summary, LLM outputs, playbook payloads.
-- **Vector store**: `playbook_index/` containing `index.faiss`, `index.pkl`. Persisted via `FAISS.save_local`.
 - **Temporary artifacts**: Streamlit downloads produced on demand (not persisted).
 - **Data sources**: Yahoo Finance via `yfinance.download`. Legacy sample CSVs (`NSEI_ohlc.csv`, `NSEBANK_ohlc.csv`) remain for demos and are auto-detected alongside the new Parquet caches.
 
@@ -807,7 +723,6 @@ Key public-ish helpers (`st` prefix indicates Streamlit coupling):
   - Unit tests for `DataFetcher.ensure_dataset` (mock yfinance).
   - Unit tests for `build_technical_summary` edge cases.
   - Integration tests for `generate_llm_analysis` using mocked ChatOpenAI.
-  - Golden tests for playbook retrieval with deterministic hash embeddings.
 - Suggested command: `pytest` (once tests added).  
 - Linting: `black`, `isort` available via `requirements.txt`.  
 - CI: Not configured; GitHub Actions or similar recommended.
@@ -819,22 +734,17 @@ Key public-ish helpers (`st` prefix indicates Streamlit coupling):
 - **LLM calls**:
   - Default model `deepseek/deepseek-chat-v3.1:free` (no token charges; rate-limited).
   - Example prompt tokens ~1.2k; response ~500 tokens → ensure OpenRouter quotas support this.
-- **Playbook retrieval**: FAISS search over small dataset (<1k entries) ~milliseconds; remote embedding fallback adds latency if `PLAYBOOK_EMBED_BACKEND=openai`.
-- **Caching**: `ensure_dataset` prevents repeated downloads; `HISTORY.record` enables reusing LLM/playbook outputs (flags displayed in Streamlit).
 - **Invalidation**: 
 - Cache refresh triggered by `max_age_days` or `--force-refresh`.
-  - Playbook index updated on each history record.
 
 | Task | Estimated Tokens | Est. Cost (USD) | Notes |
 | --- | --- | --- | --- |
 | `generate_llm_analysis` (default model) | ~1.7k | $0 (free tier) | Check OpenRouter policy; swap model to adjust |
-| Playbook plan generation | ~1.2k | Model-dependent | Controlled by `PLAYBOOK_TEMPERATURE` |
 
 ---
 
 ## 12. Troubleshooting
 - **Missing OpenRouter key**: CLI prints exception; Streamlit shows warning in LLM tab. Set `OPENROUTER_API_KEY`.
-- **Playbook unavailable**: Requires prior history + embeddings. Check `playbook_error` message (hash fallback warning). Set `PLAYBOOK_EMBED_BACKEND=hash` to silence.
 - **Rate limits / timeouts**: `_run_llm` surfaces `The LLM request failed: …`; re-run later or change model/temperature.
 - **Streamlit port in use**: `streamlit run main.py --server.port 8502`.
 - **pdflatex missing**: Not required (no PDF exports).
@@ -873,7 +783,6 @@ Key public-ish helpers (`st` prefix indicates Streamlit coupling):
 - `{{OHLC_STORE}}`: `<ticker>_ohlc.parquet` in repository root (configurable via `DatasetRequest.data_path`).
 - `{{OPENROUTER_MODELS}}`: Default `deepseek/deepseek-chat-v3.1:free`; override via `OPENROUTER_MODEL` or CLI `--model`.
 - `{{AGENT_TYPE}}`: Not implemented (direct chain usage).
-- `{{VECTOR_STORE}}`: FAISS index stored under `playbook_index/`.
 - `{{BACKTEST_WINDOWS}}`: Not implemented; summary uses `key_window=20`, `recent_rows=7`.
 - `{{METRICS}}`: Summary shows Latest Close, EMA30/EMA200, RSI14; LLM tables expand on trend/evidence.
 

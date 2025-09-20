@@ -8,7 +8,6 @@ A small toolkit for downloading OHLC data for any Yahoo Finance symbol, generati
 - Builds a structured technical summary that is suitable for human review or prompting an LLM.
 - Optional LLM integration via OpenRouter for narrative insights (CLI & Streamlit).
 - Streamlit dashboard with candlestick visualisations, caching, history, and download helpers.
-- Retrieval-augmented *Strategy Playbook* that surfaces comparable historical setups and suggests trades.
 - Structured LLM analysis rendered as data tables for easier review.
 - Reusable core library (`market_analysis`) for data access, caching, summaries, history persistence, and prompt generation.
 
@@ -36,9 +35,8 @@ Key flags:
 - `--lower-key-window` / `--lower-recent-rows`: Control how many lower timeframe candles feed the summary (prompt output trimmed to ~12 rows).
 - `--model` / `--temperature`: Override OpenRouter defaults.
 - `--show-prompt`: Print the composed LLM prompt to stdout.
-- `--show-playbook`: Display retrieval-backed playbook insights (requires embeddings + indexed history).
 - `--as-of YYYY-MM-DD`: Analyse the state of the market as it stood on the specified date.
-- `--run-dates YYYY-MM-DD [YYYY-MM-DD ...]`: Backfill multiple dates in one command (useful for seeding the playbook index).
+- `--run-dates YYYY-MM-DD [YYYY-MM-DD ...]`: Backfill multiple dates in one command.
 
 ## Streamlit Dashboard
 ```bash
@@ -46,17 +44,11 @@ streamlit run main.py
 ```
 The dashboard lets you tweak fetch parameters, inspect the structured summary, download artefacts, and review prior analyses. Results are cached to `analysis_history.db` (alongside a Parquet file named after the ticker), so re-running with the same parameters skips unnecessary work.
 
-### Strategy Playbook (RAG)
-- Set `OPENROUTER_API_KEY` (or `LLM_API_KEY`) plus optional overrides `PLAYBOOK_EMBED_MODEL`, `PLAYBOOK_TOP_K`, `PLAYBOOK_INDEX_PATH`, and `PLAYBOOK_TEMPERATURE`.
-- After a few analyses are stored, the Streamlit “Playbook Insights” tab (or CLI `--show-playbook`) retrieves similar historical cases and drafts trade ideas.
-- Historical entries are automatically indexed into a FAISS vector store located at `playbook_index/` by default. Install `faiss-cpu` (already listed in `requirements.txt`) to enable the index. If remote embeddings are unavailable (e.g., OpenRouter does not support them), the app falls back to a lightweight hash-based embedding. You can force this with `PLAYBOOK_EMBED_BACKEND=hash` or stick with OpenAI-compatible embeddings via `PLAYBOOK_EMBED_BACKEND=openai` and a supported model (`PLAYBOOK_EMBED_MODEL`).
-
 ## Architecture Overview
 - `market_analysis/data.py`: Data fetching, indicator calculation, caching, and freshness checks.
 - `market_analysis/summary.py`: Builds the structured technical summary used in prompts.
 - `market_analysis/llm.py`: Prompt assembly and LangChain/OpenRouter integration.
 - `market_analysis/history.py`: Lightweight SQLite-backed store for past analyses.
-- `market_analysis/playbook.py`: Retrieval-augmented indexing and playbook generation.
 - `main.py`: Streamlit dashboard UI built on the shared services with additional UX helpers.
 - `market_analysis/cli.py`: CLI entry point wiring arguments to the shared services.
 

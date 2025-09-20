@@ -223,4 +223,10 @@ def make_cache_key(
     return key
 
 
-__all__ = ["AnalysisHistory", "make_cache_key"]
+def make_entry_id(cache_key: Dict[str, Any]) -> str:
+    """Return a deterministic identifier for a cached analysis entry."""
+
+    return json.dumps(cache_key or {}, sort_keys=True)
+
+
+__all__ = ["AnalysisHistory", "make_cache_key", "make_entry_id"]
