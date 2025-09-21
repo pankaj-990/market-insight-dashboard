@@ -19,7 +19,7 @@ _REQUIRED_COLUMNS = [
 ]
 
 _DEFAULT_RECENT_COLUMNS = ["Open", "High", "Low", "Close", "RSI_14"]
-_MAX_RECENT_ROWS = 20
+_MAX_RECENT_ROWS = 12
 
 
 @dataclass(slots=True)
