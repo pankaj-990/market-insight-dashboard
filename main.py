@@ -12,17 +12,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from market_analysis import (
-    AnalysisHistory,
-    DatasetRequest,
-    build_multi_timeframe_summary,
-    build_technical_summary,
-    ensure_dataset,
-    format_prompt,
-    generate_llm_analysis,
-    make_cache_key,
-    make_entry_id,
-)
+from market_analysis import (DEFAULT_FEATURE_COLUMNS, SUPPORTED_NORMALIZATIONS,
+                             AnalysisHistory, DatasetRequest, MotifQueryResult,
+                             build_multi_timeframe_summary,
+                             build_technical_summary, ensure_dataset,
+                             format_prompt, generate_llm_analysis,
+                             generate_motif_matches_from_dataframe,
+                             make_cache_key, make_entry_id)
 from market_analysis.data import default_data_path
 from market_analysis.llm import LLMConfig
 
@@ -154,18 +150,30 @@ class AnalysisParams:
     """User-selected configuration captured from the sidebar form."""
 
     ticker: str = "^NSEI"
-    period: str = "1y"
+    period: str = "5y"
     interval: str = "1d"
     include_lower: bool = True
     lower_period: str = "60d"
     lower_interval: str = "1h"
     lower_key_window: int = 30
-    lower_recent_rows: int = 20
+    lower_recent_rows: int = 30
     round_digits: int = 2
     max_age_days: int = 3
     force_refresh: bool = False
     call_llm: bool = True
     show_prompt: bool = False
+    motif_enabled: bool = False
+    motif_backend: str = "faiss"
+    motif_window_size: int = 30
+    motif_top_k: int = 5
+    motif_features: str = ",".join(DEFAULT_FEATURE_COLUMNS)
+    motif_normalization: str = "zscore"
+    motif_default_regime: str = "auto"
+    motif_filter_ticker: str = ""
+    motif_filter_timeframe: str = ""
+    motif_filter_regime: str = ""
+    motif_persist_dir: str = ""
+    motif_collection: str = "motifs"
 
     @property
     def data_path(self) -> Path:
@@ -186,12 +194,26 @@ class AnalysisParams:
             lower_period=state.get("lower_period", "60d"),
             lower_interval=state.get("lower_interval", "1h"),
             lower_key_window=int(state.get("lower_key_window", 30)),
-            lower_recent_rows=int(state.get("lower_recent_rows", 20)),
+            lower_recent_rows=int(state.get("lower_recent_rows", 30)),
             round_digits=int(state.get("round_digits", 2)),
             max_age_days=int(state.get("max_age_days", 3)),
             force_refresh=bool(state.get("force_refresh", False)),
             call_llm=bool(state.get("call_llm", True)),
             show_prompt=bool(state.get("show_prompt", False)),
+            motif_enabled=bool(state.get("motif_enabled", False)),
+            motif_backend=str(state.get("motif_backend", "faiss")),
+            motif_window_size=int(state.get("motif_window_size", 30)),
+            motif_top_k=int(state.get("motif_top_k", 5)),
+            motif_features=str(
+                state.get("motif_features", ",".join(DEFAULT_FEATURE_COLUMNS))
+            ),
+            motif_normalization=str(state.get("motif_normalization", "zscore")),
+            motif_default_regime=str(state.get("motif_default_regime", "auto")),
+            motif_filter_ticker=str(state.get("motif_filter_ticker", "")),
+            motif_filter_timeframe=str(state.get("motif_filter_timeframe", "")),
+            motif_filter_regime=str(state.get("motif_filter_regime", "")),
+            motif_persist_dir=str(state.get("motif_persist_dir", "")),
+            motif_collection=str(state.get("motif_collection", "motifs")),
         )
 
     def to_state(self) -> Dict[str, Any]:
@@ -211,6 +233,18 @@ class AnalysisParams:
             "force_refresh": self.force_refresh,
             "call_llm": self.call_llm,
             "show_prompt": self.show_prompt,
+            "motif_enabled": self.motif_enabled,
+            "motif_backend": self.motif_backend,
+            "motif_window_size": self.motif_window_size,
+            "motif_top_k": self.motif_top_k,
+            "motif_features": self.motif_features,
+            "motif_normalization": self.motif_normalization,
+            "motif_default_regime": self.motif_default_regime,
+            "motif_filter_ticker": self.motif_filter_ticker,
+            "motif_filter_timeframe": self.motif_filter_timeframe,
+            "motif_filter_regime": self.motif_filter_regime,
+            "motif_persist_dir": self.motif_persist_dir,
+            "motif_collection": self.motif_collection,
         }
 
     def higher_dataset_request(self) -> DatasetRequest:
@@ -268,9 +302,57 @@ class AnalysisParams:
             {
                 "max_age_days": self.max_age_days,
                 "force_refresh": self.force_refresh,
+                "motif_enabled": self.motif_enabled,
+                "motif_backend": self.motif_backend,
+                "motif_window_size": self.motif_window_size,
+                "motif_top_k": self.motif_top_k,
+                "motif_features": self.motif_features,
+                "motif_normalization": self.motif_normalization,
+                "motif_default_regime": self.motif_default_regime,
+                "motif_filter_ticker": self.motif_filter_ticker,
+                "motif_filter_timeframe": self.motif_filter_timeframe,
+                "motif_filter_regime": self.motif_filter_regime,
+                "motif_persist_dir": self.motif_persist_dir,
+                "motif_collection": self.motif_collection,
             }
         )
         return payload
+
+    def motif_feature_list(self) -> list[str]:
+        features = [
+            item.strip() for item in self.motif_features.split(",") if item.strip()
+        ]
+        if not features:
+            return list(DEFAULT_FEATURE_COLUMNS)
+        return list(dict.fromkeys(features))
+
+    def motif_metadata_filter(self) -> Dict[str, Any]:
+        filters: Dict[str, Any] = {}
+        if self.motif_filter_ticker.strip():
+            filters["ticker"] = self.motif_filter_ticker.strip()
+        if self.motif_filter_timeframe.strip():
+            filters["timeframe"] = self.motif_filter_timeframe.strip()
+        if self.motif_filter_regime.strip():
+            regimes = [
+                item.strip()
+                for item in self.motif_filter_regime.split(",")
+                if item.strip()
+            ]
+            if len(regimes) == 1:
+                filters["regime"] = regimes[0]
+            elif regimes:
+                filters["regime"] = regimes
+        return filters
+
+    def motif_normalization_mode(self) -> str:
+        value = (self.motif_normalization or "").strip().lower()
+        if value not in SUPPORTED_NORMALIZATIONS:
+            return "zscore"
+        return value
+
+    def motif_persist_directory(self) -> Optional[str]:
+        directory = self.motif_persist_dir.strip()
+        return directory or None
 
 
 def _load_default_params() -> AnalysisParams:
@@ -380,6 +462,97 @@ def render_sidebar(defaults: AnalysisParams) -> tuple[AnalysisParams, bool]:
                 value=defaults.show_prompt,
                 help="Display the composed system + user messages sent to the model.",
             )
+
+            motif_enabled = st.checkbox(
+                "Enable price pattern",
+                value=defaults.motif_enabled,
+                help="Index rolling windows and surface the closest historical motifs for the latest candle.",
+            )
+            motif_backend = defaults.motif_backend
+            motif_window_size = defaults.motif_window_size
+            motif_top_k = defaults.motif_top_k
+            motif_features = defaults.motif_features
+            motif_normalization = defaults.motif_normalization
+            motif_default_regime = defaults.motif_default_regime
+            motif_filter_ticker = defaults.motif_filter_ticker or ticker
+            motif_filter_timeframe = defaults.motif_filter_timeframe or interval
+            motif_filter_regime = defaults.motif_filter_regime
+            motif_persist_dir = defaults.motif_persist_dir
+            motif_collection = defaults.motif_collection
+
+            # Keeping this disabled and using defaults for now
+            if motif_enabled and False:
+                with st.expander("Motif settings", expanded=True):
+                    if False:
+                        motif_backend = st.selectbox(
+                            "Vector store backend",
+                            ("faiss", "chroma"),
+                            index=_safe_index(
+                                ["faiss", "chroma"], defaults.motif_backend, 0
+                            ),
+                        )
+                        motif_window_size = int(
+                            st.number_input(
+                                "Window size (candles)",
+                                min_value=5,
+                                max_value=500,
+                                value=int(defaults.motif_window_size),
+                                help="Number of sequential candles included in each motif window.",
+                            )
+                        )
+                        motif_top_k = int(
+                            st.number_input(
+                                "Top K motifs",
+                                min_value=1,
+                                max_value=50,
+                                value=int(defaults.motif_top_k),
+                                help="Number of closest motifs to retrieve for the latest window.",
+                            )
+                        )
+                        motif_features = st.text_input(
+                            "Feature columns",
+                            value=defaults.motif_features,
+                            help="Comma-separated columns used to build motif feature vectors.",
+                        )
+                        normalization_options = list(SUPPORTED_NORMALIZATIONS)
+                        motif_normalization = st.selectbox(
+                            "Window normalisation",
+                            normalization_options,
+                            index=_safe_index(
+                                normalization_options, defaults.motif_normalization, 1
+                            ),
+                            help="Normalisation applied across columns inside each window.",
+                        )
+                        motif_default_regime = st.text_input(
+                            "Default regime label",
+                            value=defaults.motif_default_regime,
+                            help="Fallback regime label when automatic inference is unavailable (use 'auto' to infer).",
+                        )
+                        motif_filter_ticker = st.text_input(
+                            "Filter ticker",
+                            value=defaults.motif_filter_ticker or ticker,
+                            help="Limit motif results to this ticker metadata (leave empty to use the analysed ticker).",
+                        )
+                        motif_filter_timeframe = st.text_input(
+                            "Filter timeframe",
+                            value=defaults.motif_filter_timeframe or interval,
+                            help="Limit motif results to this timeframe metadata (leave empty to use the analysed interval).",
+                        )
+                        motif_filter_regime = st.text_input(
+                            "Filter regime(s)",
+                            value=defaults.motif_filter_regime,
+                            help="Optional comma-separated list of regimes to include (matches metadata labels).",
+                        )
+                        if motif_backend == "chroma":
+                            motif_persist_dir = st.text_input(
+                                "Chroma persist directory",
+                                value=defaults.motif_persist_dir,
+                                help="Optional directory for persisting the Chroma collection.",
+                            )
+                            motif_collection = st.text_input(
+                                "Chroma collection name",
+                                value=defaults.motif_collection,
+                            )
             submitted = st.form_submit_button("Run analysis")
 
     params = AnalysisParams(
@@ -396,6 +569,18 @@ def render_sidebar(defaults: AnalysisParams) -> tuple[AnalysisParams, bool]:
         force_refresh=force_refresh,
         call_llm=call_llm,
         show_prompt=show_prompt,
+        motif_enabled=motif_enabled,
+        motif_backend=motif_backend,
+        motif_window_size=motif_window_size,
+        motif_top_k=motif_top_k,
+        motif_features=motif_features,
+        motif_normalization=motif_normalization,
+        motif_default_regime=motif_default_regime,
+        motif_filter_ticker=motif_filter_ticker or "",
+        motif_filter_timeframe=motif_filter_timeframe or "",
+        motif_filter_regime=motif_filter_regime,
+        motif_persist_dir=motif_persist_dir,
+        motif_collection=motif_collection,
     )
     return params, submitted
 
@@ -508,6 +693,64 @@ def handle_submission(
 
     cache_entry_id = make_entry_id(cache_key)
 
+    motif_result: Optional[MotifQueryResult] = None
+    motif_error: Optional[str] = None
+    if params.motif_enabled:
+        try:
+            motif_result = generate_motif_matches_from_dataframe(
+                higher_df,
+                window_size=params.motif_window_size,
+                feature_columns=params.motif_feature_list(),
+                ticker=params.ticker,
+                timeframe=params.interval,
+                top_k=params.motif_top_k,
+                backend=params.motif_backend,
+                default_regime=params.motif_default_regime,
+                normalization=(
+                    None
+                    if params.motif_normalization_mode() == "none"
+                    else params.motif_normalization_mode()
+                ),
+                metadata_filter=(params.motif_metadata_filter() or None),
+                persist_directory=(
+                    params.motif_persist_directory()
+                    if params.motif_backend == "chroma"
+                    else None
+                ),
+                collection_name=(
+                    params.motif_collection
+                    if params.motif_backend == "chroma"
+                    else None
+                ),
+            )
+        except Exception as exc:
+            motif_error = str(exc)
+            motif_result = None
+
+    motif_history_payload: Optional[Dict[str, Any]] = None
+    if params.motif_enabled:
+        motif_history_payload = {
+            "enabled": True,
+            "error": motif_error,
+            "settings": {
+                "backend": params.motif_backend,
+                "window_size": params.motif_window_size,
+                "top_k": params.motif_top_k,
+                "features": params.motif_feature_list(),
+                "normalization": params.motif_normalization_mode(),
+            },
+        }
+        if motif_result is not None:
+            motif_history_payload["query"] = motif_result.query_metadata.as_dict()
+            motif_history_payload["matches"] = [
+                {
+                    "motif_id": match.motif_id,
+                    "score": match.score,
+                    "metadata": dict(match.metadata),
+                }
+                for match in motif_result.matches
+            ]
+
     data_sources: Dict[str, Dict[str, str]] = {
         "higher": {
             "interval": params.interval,
@@ -535,6 +778,8 @@ def handle_submission(
         "llm_tables": llm_tables,
         "entry_id": cache_entry_id,
     }
+    if motif_history_payload is not None:
+        history_entry["motif"] = motif_history_payload
     HISTORY.record(history_entry)
 
     result_payload = {
@@ -555,6 +800,10 @@ def handle_submission(
         "entry_id": cache_entry_id,
         "higher_last_timestamp": higher_last_timestamp,
         "lower_last_timestamp": lower_last_timestamp,
+        "motif_enabled": params.motif_enabled,
+        "motif_result": motif_result,
+        "motif_error": motif_error,
+        "motif_summary": motif_history_payload,
     }
     _store_result(result_payload, params)
 
@@ -638,7 +887,7 @@ def _plot_candlestick(df: pd.DataFrame) -> None:
         yaxis_title="Price",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
-    st.plotly_chart(figure, use_container_width=True)
+    st.plotly_chart(figure, width="stretch")
 
 
 def main() -> None:
@@ -669,7 +918,7 @@ def main() -> None:
         history_df = HISTORY.as_dataframe(history_entries)
         if not history_df.empty:
             st.subheader("Previous Analyses")
-            st.dataframe(history_df, use_container_width=True)
+            st.dataframe(history_df, width="stretch")
         return
 
     higher_df = result["higher_df"]
@@ -678,6 +927,10 @@ def main() -> None:
     data_sources = result.get("data_sources", {})
     higher_info = data_sources.get("higher", {})
     lower_info = data_sources.get("lower")
+    motif_enabled = bool(result.get("motif_enabled"))
+    motif_result: Optional[MotifQueryResult] = result.get("motif_result")
+    motif_error = result.get("motif_error")
+    motif_summary = result.get("motif_summary") or {}
 
     ticker_label = result["params"].get("ticker", "?")
     higher_message = (
@@ -741,11 +994,12 @@ def main() -> None:
             _format_metric(lower_rsi, round_digits),
         )
 
-    summary_tab, data_tab, llm_tab, history_tab = st.tabs(
+    summary_tab, data_tab, llm_tab, motif_tab, history_tab = st.tabs(
         [
             "Technical Summary",
             "Recent Candles",
             "LLM Analysis",
+            "Price Pattern Matches",
             "History",
         ]
     )
@@ -844,13 +1098,83 @@ def main() -> None:
         if result.get("llm_error") and result.get("llm_text"):
             st.caption("Warning: LLM reported an issue while generating this output.")
 
+    with motif_tab:
+        st.subheader("Nearest Matches")
+        if not motif_enabled:
+            st.info("Motif retrieval was not enabled for the latest analysis.")
+        elif motif_error:
+            st.warning(f"Motif retrieval failed: {motif_error}")
+        elif motif_result is None:
+            st.info(
+                "Motif results are not available. Adjust the settings and rerun the analysis."
+            )
+        else:
+            backend_label = motif_result.backend.upper()
+            feature_list = ", ".join(motif_result.feature_columns)
+            st.caption(
+                f"Backend: {backend_label} | Window size: {motif_result.window_size} | "
+                f"Features: {feature_list} | Normalisation: {motif_result.normalization}"
+            )
+            if motif_result.skipped_windows:
+                st.caption(
+                    f"Skipped {motif_result.skipped_windows} window(s) due to missing data or normalisation issues."
+                )
+            if motif_result.filters:
+                filter_text = ", ".join(
+                    f"{key}={value if not isinstance(value, list) else '/'.join(map(str, value))}"
+                    for key, value in motif_result.filters.items()
+                )
+                st.caption(f"Applied filters: {filter_text}")
+
+            query_metadata = motif_result.query_metadata.as_dict()
+            st.markdown(
+                f"**Query window:** {query_metadata.get('start_date')} → {query_metadata.get('end_date')} "
+                f"(`regime={query_metadata.get('regime')}`)"
+            )
+
+            if not motif_result.matches:
+                st.info("No motifs matched the configured filters.")
+            else:
+                rows = []
+                score_label = (
+                    "Distance" if motif_result.backend == "faiss" else "Similarity"
+                )
+                for idx, match in enumerate(motif_result.matches, start=1):
+                    metadata = match.metadata
+                    rows.append(
+                        {
+                            "Rank": idx,
+                            "Ticker": metadata.get("ticker"),
+                            "Timeframe": metadata.get("timeframe"),
+                            "Start": metadata.get("start_date"),
+                            "End": metadata.get("end_date"),
+                            "Regime": metadata.get("regime"),
+                            score_label: match.score,
+                            "Window Index": metadata.get("window_index"),
+                            "ID": match.motif_id,
+                        }
+                    )
+                matches_df = pd.DataFrame(rows)
+                st.dataframe(matches_df, width="stretch")
+                csv_bytes = matches_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "Download price pattern matches (.csv)",
+                    data=csv_bytes,
+                    file_name=f"motif_matches_{result['params'].get('ticker', 'instrument')}.csv",
+                    key="download-motifs",
+                )
+                with st.expander("Query metadata"):
+                    st.json(query_metadata)
+                with st.expander("Match metadata (raw)"):
+                    st.json(motif_summary.get("matches", []))
+
     with history_tab:
         st.subheader("Saved Analyses")
         history_df = HISTORY.as_dataframe(history_entries)
         if history_df.empty:
             st.info("Run the analysis to build your history.")
         else:
-            st.dataframe(history_df, use_container_width=True)
+            st.dataframe(history_df, width="stretch")
 
     st.warning(
         "This application provides educational market analysis. It is not investment, "

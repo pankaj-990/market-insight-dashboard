@@ -2,6 +2,9 @@
 langchain
 langchain-core
 langchain-openai
+langchain-community
+chromadb
+faiss-cpu
 numpy
 pandas
 pandas-ta

@@ -19,7 +19,7 @@ _REQUIRED_COLUMNS = [
 ]
 
 _DEFAULT_RECENT_COLUMNS = ["Open", "High", "Low", "Close", "RSI_14"]
-_MAX_RECENT_ROWS = 12
+_MAX_RECENT_ROWS = 20
 
 
 @dataclass(slots=True)
@@ -43,12 +43,13 @@ class _TimeframeSnapshot:
     recent_table: str
     key_window: int
     recent_rows: int
+    expert_signals: list[str]
 
 
 def build_technical_summary(
     df: pd.DataFrame,
-    key_window: int = 30,
-    recent_rows: int = 8,
+    key_window: int = 20,
+    recent_rows: int = 12,
 ) -> str:
     """Return the structured technical summary used to prompt the LLM."""
     snapshot = _build_snapshot(
@@ -65,7 +66,7 @@ def build_multi_timeframe_summary(
     lower_label: str = "Lower Timeframe",
     higher_key_window: int = 30,
     lower_key_window: int = 30,
-    higher_recent_rows: int = 8,
+    higher_recent_rows: int = 12,
     lower_recent_rows: int = 12,
 ) -> str:
     """Return a summary that captures both higher and lower timeframe context."""
@@ -146,6 +147,15 @@ def _build_snapshot(
         columns=_DEFAULT_RECENT_COLUMNS,
     )
 
+    # Disabling this for now as it is causing issues with LLM output parsing.
+    expert_signals = []
+    # expert_signals = _generate_expert_signals(
+    #     df,
+    #     lookback=key_window,
+    #     price_column="Close",
+    #     rsi_column="RSI_14",
+    # )
+
     return _TimeframeSnapshot(
         label=label,
         data_start=df.index[0],
@@ -166,6 +176,7 @@ def _build_snapshot(
         recent_table=recent_table,
         key_window=key_window,
         recent_rows=recent_rows,
+        expert_signals=expert_signals,
     )
 
 
@@ -211,6 +222,13 @@ def _render_snapshot(snapshot: _TimeframeSnapshot, *, include_label: bool) -> st
     lines.append("MOMENTUM & OSCILLATORS:")
     lines.append(f"- RSI 14: {snapshot.rsi_14:.2f} ({rsi_state})")
     lines.append("")
+    # lines.append("EXPERT OBSERVATIONS:")
+    # if snapshot.expert_signals:
+    #     for signal in snapshot.expert_signals:
+    #         lines.append(f"- {signal}")
+    # else:
+    #     lines.append("- None detected")
+    # lines.append("")
     lines.append(f"RECENT PRICE ACTION (Last {snapshot.recent_rows} candles):")
     lines.append(snapshot.recent_table)
 
@@ -255,6 +273,84 @@ def _format_number(value: object) -> str:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return f"{value:.2f}"
     return str(value)
+
+
+def _generate_expert_signals(
+    df: pd.DataFrame,
+    *,
+    lookback: int,
+    price_column: str,
+    rsi_column: str,
+) -> list[str]:
+    """Return expert-style technical observations (e.g. RSI divergences)."""
+
+    if lookback <= 0 or price_column not in df.columns or rsi_column not in df.columns:
+        return []
+
+    window = df.tail(max(lookback, 10)).copy()
+    if window.empty:
+        return []
+
+    prices = window[price_column]
+    rsi = window[rsi_column]
+    if prices.isna().any() or rsi.isna().any():
+        window = window.dropna(subset=[price_column, rsi_column])
+        prices = window[price_column]
+        rsi = window[rsi_column]
+    if len(window) < 5:
+        return []
+
+    signals: list[str] = []
+    price_tolerance = max(abs(prices.iloc[-1]) * 0.001, 0.01)
+    rsi_tolerance = 1.0
+
+    pivot_highs = window[(prices.shift(1) < prices) & (prices.shift(-1) < prices)][
+        price_column
+    ]
+    pivot_lows = window[(prices.shift(1) > prices) & (prices.shift(-1) > prices)][
+        price_column
+    ]
+
+    def _idx_label(index_value: pd.Timestamp | object) -> str:
+        if isinstance(index_value, pd.Timestamp):
+            return index_value.date().isoformat()
+        return str(index_value)
+
+    if len(pivot_highs) >= 2:
+        first_high_idx = pivot_highs.index[-2]
+        recent_high_idx = pivot_highs.index[-1]
+        price_first = prices.loc[first_high_idx]
+        price_recent = prices.loc[recent_high_idx]
+        rsi_first = rsi.loc[first_high_idx]
+        rsi_recent = rsi.loc[recent_high_idx]
+
+        if (
+            price_recent > price_first + price_tolerance
+            and rsi_recent < rsi_first - rsi_tolerance
+        ):
+            signals.append(
+                "Bearish RSI divergence: price made a higher high ("
+                f"{_idx_label(first_high_idx)}->{_idx_label(recent_high_idx)}), but RSI made a lower high."
+            )
+
+    if len(pivot_lows) >= 2:
+        first_low_idx = pivot_lows.index[-2]
+        recent_low_idx = pivot_lows.index[-1]
+        price_first = prices.loc[first_low_idx]
+        price_recent = prices.loc[recent_low_idx]
+        rsi_first = rsi.loc[first_low_idx]
+        rsi_recent = rsi.loc[recent_low_idx]
+
+        if (
+            price_recent < price_first - price_tolerance
+            and rsi_recent > rsi_first + rsi_tolerance
+        ):
+            signals.append(
+                "Bullish RSI divergence: price made a lower low ("
+                f"{_idx_label(first_low_idx)}->{_idx_label(recent_low_idx)}), but RSI made a higher low."
+            )
+
+    return signals
 
 
 def _render_alignment_section(

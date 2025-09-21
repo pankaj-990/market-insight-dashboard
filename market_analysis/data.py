@@ -50,6 +50,7 @@ class DataFetcher:
             period=self.period,
             interval=self.interval,
             progress=False,
+            auto_adjust=True,
         )
         if data.empty:
             raise ValueError("No data returned for the requested period.")
