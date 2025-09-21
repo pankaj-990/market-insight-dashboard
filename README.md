@@ -1,4 +1,4 @@
-# Market Technical Analysis Toolkit
+# Technical Analysis Toolkit
 
 A small toolkit for downloading OHLC data for any Yahoo Finance symbol, generating a structured technical summary, and (optionally) enriching it with an LLM-backed narrative. It ships with both a CLI workflow and an interactive Streamlit dashboard that share the same underlying services.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,7 +24,7 @@ from market_analysis.data import default_data_path
 from market_analysis.llm import LLMConfig
 
 st.set_page_config(
-    page_title="Market Technical Analysis Dashboard",
+    page_title="Technical Analysis Dashboard",
     page_icon="📈",
     layout="wide",
 )
@@ -162,7 +163,7 @@ class AnalysisParams:
     force_refresh: bool = False
     call_llm: bool = True
     show_prompt: bool = False
-    motif_enabled: bool = False
+    motif_enabled: bool = True
     motif_backend: str = "faiss"
     motif_window_size: int = 30
     motif_top_k: int = 5
@@ -452,6 +453,11 @@ def render_sidebar(defaults: AnalysisParams) -> tuple[AnalysisParams, bool]:
                 value=defaults.call_llm,
                 help="Requires OpenRouter API key.",
             )
+            motif_enabled = st.checkbox(
+                "Enable price pattern",
+                value=defaults.motif_enabled,
+                help="Index rolling windows and surface the closest historical motifs for the latest candle.",
+            )
             force_refresh = st.checkbox(
                 "Force data refresh",
                 value=defaults.force_refresh,
@@ -463,11 +469,6 @@ def render_sidebar(defaults: AnalysisParams) -> tuple[AnalysisParams, bool]:
                 help="Display the composed system + user messages sent to the model.",
             )
 
-            motif_enabled = st.checkbox(
-                "Enable price pattern",
-                value=defaults.motif_enabled,
-                help="Index rolling windows and surface the closest historical motifs for the latest candle.",
-            )
             motif_backend = defaults.motif_backend
             motif_window_size = defaults.motif_window_size
             motif_top_k = defaults.motif_top_k
@@ -891,7 +892,7 @@ def _plot_candlestick(df: pd.DataFrame) -> None:
 
 
 def main() -> None:
-    st.title("Market Technical Analysis Dashboard")
+    st.title("Technical Analysis Dashboard")
     st.caption(
         "Interactively fetch market data, review technical summaries, and (optionally) "
         "generate LLM-backed insights."
@@ -1064,7 +1065,7 @@ def main() -> None:
         st.subheader("Narrative Insights")
         if not result["call_llm"]:
             st.info("LLM analysis was not requested for the latest run.")
-        elif result["llm_text"]:
+        elif result.get("llm_tables"):
             tables = result.get("llm_tables") or {}
             section_titles = {
                 "overall_trend": "Overall Trend Assessment",
@@ -1073,7 +1074,7 @@ def main() -> None:
                 "chart_patterns": "Chart Pattern Analysis",
                 "trade_plan": "Trade Plan Outline",
             }
-            rendered = False
+            displayed = False
             for key, title in section_titles.items():
                 section = tables.get(key)
                 if not section:
@@ -1082,14 +1083,21 @@ def main() -> None:
                 rows = section.get("rows") or []
                 if not headers:
                     continue
-                st.markdown(f"**{title}**")
+                st.subheader(title)
                 st.table(pd.DataFrame(rows, columns=headers))
-                rendered = True
-            if not rendered:
-                st.markdown(result["llm_text"])
-            else:
-                with st.expander("Markdown output"):
-                    st.markdown(result["llm_text"])
+                displayed = True
+            if displayed:
+                st.divider()
+            st.json(tables)
+            st.download_button(
+                "Download analysis (.json)",
+                json.dumps(tables, indent=2),
+                file_name=f"llm_analysis_{result['params']['ticker']}.json",
+                mime="application/json",
+                key="download-llm-json",
+            )
+        elif result.get("llm_text"):
+            st.code(result["llm_text"], language="text")
         elif result["llm_error"]:
             st.warning(result["llm_error"])
         else:
