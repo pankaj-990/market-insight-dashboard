@@ -475,7 +475,18 @@ def render_sidebar(defaults: AnalysisParams) -> tuple[AnalysisParams, bool]:
             motif_features = defaults.motif_features
             motif_normalization = defaults.motif_normalization
             motif_default_regime = defaults.motif_default_regime
-            motif_filter_ticker = defaults.motif_filter_ticker or ticker
+            stored_filter_ticker = defaults.motif_filter_ticker.strip()
+            previous_ticker = defaults.ticker.strip()
+            if stored_filter_ticker:
+                if (
+                    previous_ticker
+                    and stored_filter_ticker.lower() == previous_ticker.lower()
+                ):
+                    motif_filter_ticker = ticker
+                else:
+                    motif_filter_ticker = stored_filter_ticker
+            else:
+                motif_filter_ticker = ticker
             motif_filter_timeframe = defaults.motif_filter_timeframe or interval
             motif_filter_regime = defaults.motif_filter_regime
             motif_persist_dir = defaults.motif_persist_dir
