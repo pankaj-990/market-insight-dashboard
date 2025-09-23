@@ -1076,29 +1076,32 @@ def main() -> None:
         st.subheader("Narrative Insights")
         if not result["call_llm"]:
             st.info("LLM analysis was not requested for the latest run.")
+        elif result.get("llm_text"):
+            st.markdown(result["llm_text"])
+
         elif result.get("llm_tables"):
             tables = result.get("llm_tables") or {}
-            section_titles = {
-                "overall_trend": "Overall Trend Assessment",
-                "key_evidence": "Key Technical Evidence",
-                "candlestick_patterns": "Candlestick Pattern Analysis",
-                "chart_patterns": "Chart Pattern Analysis",
-                "trade_plan": "Trade Plan Outline",
-            }
-            displayed = False
-            for key, title in section_titles.items():
-                section = tables.get(key)
-                if not section:
-                    continue
-                headers = section.get("headers") or []
-                rows = section.get("rows") or []
-                if not headers:
-                    continue
-                st.subheader(title)
-                st.table(pd.DataFrame(rows, columns=headers))
-                displayed = True
-            if displayed:
-                st.divider()
+            # section_titles = {
+            #     "overall_trend": "Overall Trend Assessment",
+            #     "key_evidence": "Key Technical Evidence",
+            #     "candlestick_patterns": "Candlestick Pattern Analysis",
+            #     "chart_patterns": "Chart Pattern Analysis",
+            #     "trade_plan": "Trade Plan Outline",
+            # }
+            # displayed = False
+            # for key, title in section_titles.items():
+            #     section = tables.get(key)
+            #     if not section:
+            #         continue
+            #     headers = section.get("headers") or []
+            #     rows = section.get("rows") or []
+            #     if not headers:
+            #         continue
+            #     st.subheader(title)
+            #     st.table(pd.DataFrame(rows, columns=headers))
+            #     displayed = True
+            # if displayed:
+            #     st.divider()
             st.json(tables)
             st.download_button(
                 "Download analysis (.json)",
