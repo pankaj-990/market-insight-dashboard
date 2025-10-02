@@ -40,6 +40,61 @@ LOWER_PERIOD_SUGGESTIONS = ["30d", "60d", "90d", "180d", "1y"]
 SUMMARY_HEADING_RE = re.compile(r"^[A-Z0-9 /()_-]+:?$")
 
 
+WEEKLY_EMA_TICKERS: list[tuple[str, str]] = [
+    ("niftybees.ns", "NiftyBeES"),
+    ("goldbees.ns", "GoldBeES"),
+    ("hngsngbees.ns", "Hang Seng BeES"),
+    ("mon100.ns", "NASDAQ 100"),
+]
+WEEKLY_EMA_PERIOD = "5y"
+WEEKLY_EMA_INTERVAL = "1wk"
+
+
+def _load_weekly_ema_dataset(ticker: str) -> tuple[pd.DataFrame, str]:
+    """Fetch cached weekly OHLC data with EMA indicators for the given ticker."""
+
+    return _load_dataset_cached(
+        ticker,
+        WEEKLY_EMA_PERIOD,
+        WEEKLY_EMA_INTERVAL,
+        None,
+        2,
+        7,
+    )
+
+
+def _build_weekly_ema_chart(df: pd.DataFrame, *, title: str) -> go.Figure:
+    """Return a Plotly figure with weekly close and 30-EMA lines."""
+
+    trimmed = df[["Close", "EMA_30"]].dropna(subset=["Close"])
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=trimmed.index,
+            y=trimmed["Close"],
+            mode="lines",
+            name="Close",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=trimmed.index,
+            y=trimmed["EMA_30"],
+            mode="lines",
+            name="30 EMA",
+        )
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title="Date",
+        yaxis_title="Price",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        margin=dict(t=50, r=20, b=40, l=60),
+    )
+    return fig
+
+
 @st.cache_data(show_spinner=False)
 def _load_dataset_cached(
     ticker: str,
@@ -1006,12 +1061,13 @@ def main() -> None:
             _format_metric(lower_rsi, round_digits),
         )
 
-    summary_tab, data_tab, llm_tab, motif_tab, history_tab = st.tabs(
+    summary_tab, data_tab, llm_tab, motif_tab, weekly_tab, history_tab = st.tabs(
         [
             "Technical Summary",
             "Recent Candles",
             "LLM Analysis",
             "Price Pattern Matches",
+            "Weekly 30-EMA Overview",
             "History",
         ]
     )
@@ -1189,6 +1245,39 @@ def main() -> None:
                     st.json(query_metadata)
                 with st.expander("Match metadata (raw)"):
                     st.json(motif_summary.get("matches", []))
+
+    with weekly_tab:
+        st.subheader("Weekly 30-EMA Overview")
+        st.caption("Weekly closes with a 30-period EMA from Yahoo Finance data.")
+
+        weekly_results: list[tuple[str, str, pd.DataFrame, str]] = []
+        for ticker, label in WEEKLY_EMA_TICKERS:
+            try:
+                dataset, freshness = _load_weekly_ema_dataset(ticker)
+            except Exception as exc:  # pragma: no cover - UI surface
+                st.warning(f"Unable to load {ticker.upper()}: {exc}")
+                continue
+
+            if dataset.empty:
+                st.info(f"No weekly data available for {label} ({ticker.upper()}).")
+                continue
+
+            weekly_results.append((ticker, label, dataset, freshness))
+
+        if not weekly_results:
+            st.info("Weekly datasets are unavailable right now. Try refreshing later.")
+        else:
+            cols: list[Any] = []
+            for idx, (ticker, label, dataset, freshness) in enumerate(weekly_results):
+                if idx % 2 == 0:
+                    cols = st.columns(2)
+                col = cols[idx % 2]
+                chart_title = f"{label} ({ticker.upper()})"
+                col.plotly_chart(
+                    _build_weekly_ema_chart(dataset, title=chart_title),
+                    use_container_width=True,
+                )
+                col.caption(f"Source: Yahoo Finance • Cache: {freshness}")
 
     with history_tab:
         st.subheader("Saved Analyses")
