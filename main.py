@@ -42,7 +42,9 @@ SUMMARY_HEADING_RE = re.compile(r"^[A-Z0-9 /()_-]+:?$")
 
 WEEKLY_EMA_TICKERS: list[tuple[str, str]] = [
     ("niftybees.ns", "NiftyBeES"),
+    ("bankbees.ns", "NiftyBankBeES"),
     ("goldbees.ns", "GoldBeES"),
+    ("silverbees.ns", "SilverBeES"),
     ("hngsngbees.ns", "Hang Seng BeES"),
     ("mon100.ns", "NASDAQ 100"),
 ]
@@ -59,7 +61,7 @@ def _load_weekly_ema_dataset(ticker: str) -> tuple[pd.DataFrame, str]:
         WEEKLY_EMA_INTERVAL,
         None,
         2,
-        7,
+        1,
     )
 
 
