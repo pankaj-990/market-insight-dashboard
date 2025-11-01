@@ -15,7 +15,12 @@ from dataclasses import dataclass
 from textwrap import dedent
 from typing import Any, Dict, List, Optional
 
-from langchain.prompts import ChatPromptTemplate
+try:
+    # LangChain < 0.1 shipped ChatPromptTemplate under langchain.prompts; newer
+    # releases moved it to langchain_core.prompts.
+    from langchain.prompts import ChatPromptTemplate
+except ImportError:  # pragma: no cover - only hit on newer LangChain
+    from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
 from .settings import get_setting
